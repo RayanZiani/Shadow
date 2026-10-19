@@ -1,0 +1,132 @@
+version: "3.9"
+
+# RESILIENCE-ALPHA / SHADOW-SETTLE — squelette docker-compose
+# Lancez par brique : `docker compose up db-postgres vault` d'abord,
+# puis ajoutez les services au fur et à mesure qu'ils compilent.
+
+networks:
+  shadow-net:
+    driver: bridge
+
+volumes:
+  pg-data:
+  vault-data:
+  prometheus-data:
+  grafana-data:
+
+services:
+  # ---------- PILIER INFRA ----------
+  db-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: shadow_settle
+      POSTGRES_USER: shadow
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks: [shadow-net]
+
+  vault:
+    image: hashicorp/vault:1.17
+    cap_add: [IPC_LOCK]
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+    volumes:
+      - vault-data:/vault/file
+    ports: ["8200:8200"]
+    networks: [shadow-net]
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - prometheus-data:/prometheus
+    networks: [shadow-net]
+
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports: ["3001:3000"]
+    networks: [shadow-net]
+
+  loki:
+    image: grafana/loki:latest
+    networks: [shadow-net]
+
+  promtail:
+    image: grafana/promtail:latest
+    networks: [shadow-net]
+
+  # ---------- PILIER DEV ----------
+  monero-crypto-core:
+    build: ./services/monero-crypto-core
+    environment:
+      RUST_LOG: info
+    ports: ["8081:8081"]
+    networks: [shadow-net]
+
+  auth-service:
+    build: ./services/auth-service
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    depends_on: [vault]
+    ports: ["8082:8082"]
+    networks: [shadow-net]
+
+  payment-api:
+    build: ./services/payment-api
+    environment:
+      DATABASE_URL: "postgresql://shadow:changeme@db-postgres:5432/shadow_settle"
+      CRYPTO_CORE_URL: "http://monero-crypto-core:8081"
+      ML_DETECTOR_URL: "http://ml-detector:8083"
+    depends_on: [db-postgres, monero-crypto-core]
+    ports: ["8080:8080"]
+    networks: [shadow-net]
+
+  front-dashboard:
+    build: ./front-dashboard
+    environment:
+      VITE_API_BASE: "http://localhost:8080"
+    ports: ["5173:5173"]
+    networks: [shadow-net]
+
+  # ---------- PILIER CYBER ----------
+  shadow-api:
+    build: ./services/shadow-api
+    ports: ["8090:8090"]
+    networks: [shadow-net]
+
+  # waf:
+  #   image: owasp/modsecurity-crs:nginx
+  #   ports: ["443:8443"]
+  #   networks: [shadow-net]
+  # -> à activer Jour 3, une fois payment-api et shadow-api stables.
+
+  # ---------- PILIER IA / DATA ----------
+  ml-detector:
+    build: ./services/ml-detector
+    environment:
+      REMEDIATION_WEBHOOK: "http://remediation-engine:8084/incident"
+    ports: ["8083:8083"]
+    networks: [shadow-net]
+
+  # rag-assistant:
+  #   build: ./services/rag-assistant
+  #   # Ollama tourne de préférence sur le PC IA dédié, pas ici.
+  #   networks: [shadow-net]
+
+  # ---------- PILIER INFRA : remédiation ----------
+  remediation-engine:
+    build: ./services/remediation-engine
+    environment:
+      ANSIBLE_PLAYBOOK: "/ansible/remediation_playbook.yml"
+    volumes:
+      - ./ansible:/ansible
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports: ["8084:8084"]
+    networks: [shadow-net]
+
+secrets:
+  pg_password:
+    file: ./secrets/pg_password.txt   # jamais commité — voir .gitignore
