@@ -290,9 +290,11 @@ Reste :
   **Acceptation** : `/ask` renvoie `engine: ollama:llama3.1:8b` et une réponse
   rédigée citant `docs/RAPPORT.md`. Sans lui, le mode extractif reste actif.
 
-- [ ] **Quadrant « Assistant » dans le dashboard** — S
-  Un champ de question + la réponse + les sources, dans un 5ᵉ quadrant.
-  **Acceptation** : la question de référence se pose depuis le dashboard.
+- [x] **Quadrant « Assistant » dans le dashboard** — S
+  `front-dashboard/src/RagAssistant.jsx`, 5ᵉ quadrant de la supervision :
+  question, réponse, sources avec score BM25, et **le moteur affiché**
+  (`ollama:llama3.1:8b` ou `extractive`). Si Ollama est muet, l'écran l'écrit
+  au lieu de faire semblant. Build : 201,76 kB.
 
 ---
 
