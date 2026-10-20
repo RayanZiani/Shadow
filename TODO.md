@@ -112,6 +112,102 @@ trous qu'un jury CYBER exploite en quelques minutes.
 
 ---
 
+## 0.6 Restes de l'audit de code (moyens, assumés)
+
+L'audit de code a trouvé 4 bugs critiques et 12 moyens. **Les 4 critiques sont
+fermés** (C1 boutique PostgreSQL, C2 double dépense concurrente, C4 double
+débit, S1 oracle 404) — voir `docs/SECURITE.md` §2 bis. Les points ci-dessous
+restent ouverts : ils sont réels, et les taire serait la faute.
+
+### 0.6.1 Commandes bloquées en `pending` — M
+
+Si le processus meurt entre la réservation du stock et l'appel de paiement, la
+commande reste `pending`, le stock est décrémenté, et **rien ne répare jamais**
+cet état. Un timeout HTTP peut aussi produire un paiement réussi côté
+`payment-api` avec une commande `failed` côté boutique (aucune réconciliation
+par `reference`).
+
+- [ ] **Balayage des `pending` au démarrage et périodiquement** — M
+  TTL de réservation ; au-delà, passer en `failed` et restituer le stock.
+  **Acceptation** : `kill -9` de `shop-api` entre réservation et paiement,
+  puis redémarrage → la commande est `failed` et le stock est revenu.
+
+- [ ] **`/tx/pay` idempotent par `reference`** — M
+  `payment-api` reçoit déjà `reference` mais ne la stocke pas. Un rejeu doit
+  renvoyer le même résultat au lieu d'émettre un second paiement.
+  **Acceptation** : deux appels avec la même `reference` → une seule key image.
+
+### 0.6.2 Registre : reconnexion non automatique — M
+
+Après une coupure PostgreSQL, `RegistryStore.available` passe à `False`
+**définitivement** : les écritures suivantes sont perdues en silence, et les
+key images dépensées pendant la panne le sont aussi (la double dépense
+redevient possible après redémarrage).
+
+- [ ] **Reconnexion avec backoff + compteur de pertes** — M
+  **Acceptation** : `docker compose stop db-postgres`, quelques paiements,
+  `start` → `/healthz` repasse `durable: true` et `lost_writes` est non nul.
+
+### 0.6.3 Itération de structures mutées — M
+
+`/metrics` et `/decoys` de `payment-api` itèrent `OUTPUTS` depuis le threadpool
+pendant que l'event loop le mute (`_mint`, `verify_pin`). Un
+`RuntimeError: dictionary changed size during iteration` est possible sous
+charge (scrape Prometheus + sonde toutes les 4 s). Même classe dans
+`detector.py` (`_window_age` teste `if not event_window` puis lit
+`event_window[0]`).
+
+- [ ] **Snapshot sous verrou** — S
+  **Acceptation** : `tools/load_test.py --target payment --clients 20` pendant
+  10 min sans `RuntimeError` dans les logs.
+
+### 0.6.4 `StateBus.publish` depuis le threadpool — M
+
+`/state/report` est un endpoint **synchrone** : il appelle `bus.publish` depuis
+le threadpool, alors que `publish` manipule un `asyncio.Queue` (non
+thread-safe) et incrémente `_seq` sans verrou. Le réveil SSE peut être retardé
+jusqu'au `: ping` suivant (15 s), et deux publications peuvent produire le même
+`seq`. Chemin exercé à **chaque transaction réussie**.
+
+- [ ] **`report_state` en `async def`, ou `loop.call_soon_threadsafe`** — S
+  **Acceptation** : `test_state_bus.py` couvre `publish` depuis un thread ;
+  les `seq` restent strictement croissants.
+
+### 0.6.5 Garde « dernier administrateur » non atomique — M
+
+Deux admins peuvent se rétrograder mutuellement en parallèle : chacun lit
+`active_admins() == 2`, chacun passe, il en reste 0. Et `active_admins()`
+compte les admins **sans visage enrôlé**, alors que la connexion l'exige : on
+peut se retrouver sans personne capable de se connecter.
+
+- [ ] **Transaction + compter les admins avec visage** — S
+  **Acceptation** : deux `PATCH` concurrents sur les deux derniers admins →
+  un seul passe, l'autre reçoit 409.
+
+### 0.6.6 Divers (S)
+
+- [ ] `assert` → `if not ...: raise HTTPException` sur les listes blanches
+  (`shop-api`, `backoffice`) : correct aujourd'hui (clés littérales), mais un
+  `assert` disparaît avec `python -O`.
+- [ ] `db.run` : remplacer l'heuristique `"RETURNING" in sql.upper()` par un
+  paramètre explicite.
+- [ ] `_auto_probe_loop` émet 1 output interne toutes les 4 s et ne les retire
+  jamais (~21 600/jour). Borner.
+- [ ] `/tx/pay` n'est pas rate-limité et le port 8080 est publié : une boucle
+  d'appels fait croître le registre. La docstring dit « rate-limité par le WAF
+  en amont », ce qui est faux pour un accès direct.
+- [ ] `decoy_ids` : le plafond de 64 est testé APRÈS la recherche des inconnus
+  dans 1 million d'ids. Tester la longueur d'abord, et borner le corps.
+- [ ] `quarantine_outputs` retire 25 outputs par incident ; `_replenish_pool`
+  n'est appelé que par `/outputs?unspent=true`. Après ~20 incidents sans cet
+  appel, plus de leurres → 502 en boucle. Appeler `_replenish_pool` depuis
+  `get_decoys` / `pay_order`.
+- [ ] `random.seed(1337)` pour les leurres : sélection reproductible. Assumé
+  pour la démo, mais à remplacer par `SystemRandom` si l'anonymat est défendu.
+- [ ] `test_alert_ingest.py` met `fingerprint` dans `labels`, alors que
+  l'Alertmanager réel le place au niveau de l'alerte : le repli `name:status`
+  est utilisé en production.
+
 ## 0. Avant la soutenance — bloquant, à faire la veille
 
 Ces tâches ne sont pas du développement : sans elles, la démo peut échouer.
