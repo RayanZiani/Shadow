@@ -51,6 +51,12 @@ from pydantic import BaseModel
 CRYPTO_CORE_URL = os.environ.get("CRYPTO_CORE_URL", "http://monero-crypto-core:8081")
 
 from svc_auth import require_service_token, service_token_configured  # noqa: E402
+
+
+def _service_headers() -> dict:
+    """En-tête d'authentification service-à-service (vide si non configuré)."""
+    token = os.environ.get("SERVICE_TOKEN", "").strip()
+    return {"X-Service-Token": token} if token else {}
 ML_DETECTOR_URL = os.environ.get("ML_DETECTOR_URL", "http://ml-detector:8083")
 REMEDIATION_STATE_URL = os.environ.get(
     "REMEDIATION_STATE_URL", "http://remediation-engine:8084/state/report"
@@ -592,7 +598,9 @@ def _observation(
 async def _send_telemetry(observation: dict):
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(f"{ML_DETECTOR_URL}/ingest", json=observation)
+            await client.post(
+                f"{ML_DETECTOR_URL}/ingest", json=observation, headers=_service_headers()
+            )
     except httpx.HTTPError:
         pass  # le ML ne doit jamais faire planter un paiement légitime
 
@@ -601,7 +609,9 @@ async def _report_success_tx(detail: dict):
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             await client.post(
-                REMEDIATION_STATE_URL, json={"state": "NORMAL_TX", "detail": detail}
+                REMEDIATION_STATE_URL,
+                json={"state": "NORMAL_TX", "detail": detail},
+                headers=_service_headers(),
             )
     except httpx.HTTPError:
         pass

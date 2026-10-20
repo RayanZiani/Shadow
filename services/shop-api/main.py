@@ -674,6 +674,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if not changes:
             return {"product": public_product(row), "changed": []}
         changes["updated_at"] = time.time()
+        # Liste blanche : aucune colonne arbitraire ne peut entrer dans le SQL.
+        allowed = {"name", "description", "price_cents", "stock", "active", "image_url", "updated_at"}
+        assert set(changes) <= allowed, f"colonne non autorisée : {set(changes) - allowed}"
         assignments = ", ".join(f"{column} = ?" for column in changes)
         db.run(
             f"UPDATE products SET {assignments} WHERE id = ?",

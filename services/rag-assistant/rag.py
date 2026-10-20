@@ -221,6 +221,22 @@ def load_index(path: str | Path) -> dict:
         return json.load(handle)
 
 
+def _row_as_sentence(line: str) -> str | None:
+    """Transforme une ligne de tableau Markdown en phrase lisible.
+
+    « | Durée de la chaîne P0 | 6,6 à 7,2 s (limite 90 s) | » devient
+    « Durée de la chaîne P0 : 6,6 à 7,2 s (limite 90 s) ». Sans cela, la
+    réponse à « combien de temps prend la reprise ? » serait un fragment de
+    tableau, illisible à l'oral comme à l'écrit.
+    """
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    cells = [cell for cell in cells if cell and not set(cell) <= {"-", ":", " "}]
+    if len(cells) < 2:
+        return None
+    label, *values = cells
+    return f"{label} : {' '.join(values)}"
+
+
 def extractive_answer(question: str, results: list[dict]) -> str:
     """Réponse sans LLM : les phrases qui contiennent les termes de la question.
 
@@ -228,27 +244,15 @@ def extractive_answer(question: str, results: list[dict]) -> str:
     citées telles quelles, avec leur source. C'est ce qui rend le mode dégradé
     défendable en Q&A.
 
-    Les lignes de tableau, de code et de commande sont écartées : ce sont des
-    fragments (« | 6,6 s | 7,2 s | ») qui se lisent mal hors contexte. Elles
-    restent dans l'index, où elles aident la recherche.
+    Les lignes de code et de commande sont écartées : ce sont des fragments qui
+    se lisent mal hors contexte. Les **lignes de tableau** sont converties en
+    phrases quand la question attend une valeur (« combien de temps… ») : c'est
+    précisément là que vivent les mesures du dossier.
     """
     terms = set(tokenize(question))
     if not results:
         return "Aucun passage du dossier ne répond à cette question."
 
-    def usable(sentence: str) -> bool:
-        stripped = sentence.lstrip()
-        if len(stripped) < 40:
-            return False
-        if stripped.startswith(
-            ("|", "#", ">", "```", "-", "*", "//", "curl", "docker", "python", "../")
-        ):
-            return False
-        if stripped.count("|") >= 2:
-            return False
-        return True
-
-    sentences: list[tuple[float, str, str]] = []
     # Question de durée (« combien de temps… ») : les phrases qui portent une
     # valeur en secondes sont celles qui répondent. Sans ce signal, BM25
     # remonte « entre l'attaque et la reprise » — vrai, mais hors sujet.
@@ -257,33 +261,84 @@ def extractive_answer(question: str, results: list[dict]) -> str:
     )
     numeric_re = re.compile(r"\d+(?:[.,]\d+)?\s*(?:s\b|ms\b|min\b|secondes?\b|minutes?\b)")
 
-    for rank, result in enumerate(results):
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+", result["text"]):
-            sentence = sentence.strip()
-            if not usable(sentence):
-                continue
-            overlap = len(terms & set(tokenize(sentence)))
-            carries_number = bool(numeric_re.search(sentence))
-            if not overlap and not (numeric_hint and carries_number and rank <= 2):
-                continue
-            # Priorité : couverture de la question, puis rang du passage, puis
-            # longueur (une phrase complète informe mieux qu'un fragment).
-            score = overlap * 10 + min(len(sentence), 300) / 100 - rank
-            if numeric_hint and carries_number:
-                # Une question « combien de temps » attend un nombre : la
-                # phrase qui en porte un passe devant, même si elle répète
-                # moins de mots de la question.
-                score += 30
-            sentences.append((score, sentence, result["source"]))
-    sentences.sort(reverse=True)
+    def usable(sentence: str) -> bool:
+        stripped = sentence.lstrip()
+        if len(stripped) < 40:
+            return False
+        if stripped.startswith(
+            ("#", ">", "```", "-", "*", "//", "curl", "docker", "python", "../")
+        ):
+            return False
+        if stripped.count("|") >= 2:
+            return False
+        return True
 
-    if not sentences:
+    candidates: list[tuple[str, str]] = []
+    for result in results:
+        # Les documents sont coupés à 80 colonnes : couper sur `\n` casserait
+        # les phrases en plein milieu (« … transaction de preuve — prend »).
+        # On recolle donc les lignes d'un même paragraphe, puis on sépare sur
+        # les phrases. Les blocs de tableau restent ligne par ligne.
+        for paragraph in re.split(r"\n\s*\n", result["text"]):
+            lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+            if not lines:
+                continue
+            is_table = all(line.startswith("|") for line in lines)
+            if is_table:
+                if not numeric_hint:
+                    continue
+                for line in lines:
+                    sentence = _row_as_sentence(line)
+                    if sentence is None or not numeric_re.search(sentence):
+                        continue
+                    candidates.append((sentence, result["source"]))
+                continue
+            candidates.append((" ".join(lines), result["source"]))
+
+    # Phrases reconstituées : un paragraphe peut contenir plusieurs phrases.
+    sentences: list[tuple[str, str]] = []
+    for text, source in candidates:
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            sentence = sentence.strip()
+            if usable(sentence):
+                sentences.append((sentence, source))
+    candidates = sentences
+
+    # Un passage de tableau n'a pas de rang individuel : on garde l'ordre de
+    # pertinence du passage qui le contient, déjà porté par `results`.
+    scored: list[tuple[float, str, str]] = []
+    rank_of = {}
+    for position, result in enumerate(results):
+        for sentence, source in candidates:
+            if source == result["source"] and sentence in result["text"].replace(
+                "\n", " "
+            ):
+                rank_of.setdefault(sentence, position)
+
+    for sentence, source in candidates:
+        rank = rank_of.get(sentence, len(results) - 1)
+        overlap = len(terms & set(tokenize(sentence)))
+        carries_number = bool(numeric_re.search(sentence))
+        if not overlap and not (numeric_hint and carries_number and rank <= 2):
+            continue
+        # Priorité : couverture de la question, puis rang du passage, puis
+        # longueur (une phrase complète informe mieux qu'un fragment).
+        score = overlap * 10 + min(len(sentence), 300) / 100 - rank
+        if numeric_hint and carries_number:
+            # Une question « combien de temps » attend un nombre : la phrase
+            # qui en porte un passe devant, même si elle répète moins de mots.
+            score += 30
+        scored.append((score, sentence, source))
+
+    scored.sort(reverse=True)
+
+    if not scored:
         best = results[0]
         return f"D'après `{best['source']}` (§{best['heading']}) : {best['text'][:400]}"
 
     picked: list[tuple[str, str]] = []
     seen_sources: set[str] = set()
-    for _, sentence, source in sentences:
+    for _, sentence, source in scored:
         if sentence in {text for text, _ in picked}:
             continue
         picked.append((sentence, source))

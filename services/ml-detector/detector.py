@@ -29,7 +29,7 @@ import joblib
 import numpy as np
 import torch
 import torch.nn as nn
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -57,6 +57,8 @@ ANOMALY_STREAK_REQUIRED = int(os.environ.get("ANOMALY_STREAK_REQUIRED", "3"))
 ARTIFACT_DIR = os.environ.get("ARTIFACT_DIR", ".")
 
 app = FastAPI(title="ml-detector")
+
+from svc_auth import require_service_token, service_token_configured  # noqa: E402
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get(
@@ -245,8 +247,16 @@ def _window_age() -> float | None:
     return round(time.time() - event_window[0]["timestamp"], 2)
 
 
-@app.post("/ingest")
+@app.post("/ingest", dependencies=[Depends(require_service_token)])
 async def ingest(event: TelemetryEvent):
+    """Télémétrie envoyée par payment-api, et par lui seul.
+
+    Pourquoi c'est protégé : `/ingest` ouvert permettait deux attaques réelles.
+    (1) **Évasion** : inonder la fenêtre d'observations « normales » pour diluer
+    le signal d'une attaque et empêcher la détection. (2) **Déni de service** :
+    envoyer de fausses anomalies pour déclencher le playbook à volonté.
+    Le détecteur observe le SI, il ne doit pas être une entrée du SI.
+    """
     global _last_trigger, _incident_active, _anomaly_streak
 
     now = time.time()
@@ -499,4 +509,6 @@ def healthz():
         # pour un autre modèle). À voir avant de conclure à un modèle calme.
         "runtime_threshold_ignored": RUNTIME_THRESHOLD_IGNORED,
         "threshold_source": (THRESHOLD or {}).get("source"),
+        # false = /ingest fermé : payment-api ne peut plus alimenter le modèle.
+        "service_token_configured": service_token_configured(),
     }

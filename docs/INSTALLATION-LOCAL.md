@@ -127,20 +127,20 @@ python3 -m venv .venv
 |---|---|---|
 | remediation-engine | `services/remediation-engine/test_state_bus.py` (7) | contrat d'état, SSE, `seq` croissant, abonné lent non bloquant |
 | remediation-engine | `services/remediation-engine/test_incident_flow.py` (5) | ordre `UNDER_ATTACK → REMEDIATING → RECOVERED_TX`, verrou, échec explicite |
-| ml-detector | `services/ml-detector/test_detector.py` (11) | invariance au volume, médiane des intervalles, sonde exclue, purge de fenêtre, anti-rebond, réarmement |
-| payment-api | `services/payment-api/test_payment_api.py` (8) | leurres gamma, `unspent`, quarantaine des plus anciens, `ring-size`, PIN |
+| ml-detector | `services/ml-detector/test_detector.py` (12) | invariance au volume, médiane des intervalles, sonde exclue, purge de fenêtre, anti-rebond, réarmement |
+| payment-api | `services/payment-api/test_payment_api.py` (13) | leurres gamma, `unspent`, quarantaine des plus anciens, `ring-size`, PIN |
 | hardware | `hardware/bridge/test_hardware_bridge.py` (9) | trame série, états inconnus, mode `--rich`, pont strictement en lecture |
-| monero-crypto-core | `services/monero-crypto-core/src/main.rs` (8) | décodage de point, Pedersen homomorphe, chiffrement réversible, signature d'anneau valide, falsifications rejetées, key image déterministe, dérivation one-time |
+| monero-crypto-core | `services/monero-crypto-core/src/main.rs` (9) | décodage de point, Pedersen homomorphe, chiffrement réversible, signature d'anneau valide, falsifications rejetées, key image déterministe, dérivation one-time |
 | monero-crypto-core | `services/monero-crypto-core/test_crypto_flow.py` (10) | **par HTTP** : émission, dérivation, scan view-only, audit, équilibre des engagements, bLSAG, rejeu |
 | waf | `services/waf/test_waf.py` (10) | âge médian des leurres, routage honeypot, **le client légitime n'est jamais dérouté**, reset |
 | shadow-api | `services/shadow-api/test_shadow_api.py` (4) | honeypot : jamais d'erreur visible, journal borné |
-| auth-service | `services/auth-service/test_auth_service.py` (5) | clé lue dans Vault, 503 si Vault muet, cache et rotation |
+| auth-service | `services/auth-service/test_auth_service.py` (9) | clé lue dans Vault, 503 si Vault muet, cache et rotation |
 | back-office | `services/backoffice/test_backoffice.py` (25) | parcours identifiant → visage → mot de passe, refus, blocage 5 min, LED, habilitations, audit |
 | boutique | `services/shop-api/test_shop_api.py` (17) | catalogue en base, panier, achat, stock réservé puis restitué, historique par capability token, administration |
-| assistant RAG | `services/rag-assistant/test_rag.py` (10) | index BM25 du dossier, question de référence, citations, mode dégradé extractif |
+| assistant RAG | `services/rag-assistant/test_rag.py` (12) | index BM25 du dossier, question de référence, citations, mode dégradé extractif |
 | ingestion SIEM | `services/remediation-engine/test_alert_ingest.py` (6) | une alerte actionnable ouvre un incident, une alerte de confort non, anti-rebond, jeton |
 
-Soit **141 tests**. Les tests HTTP du noyau se déclarent ignorés si
+Soit **148 tests**. Les tests HTTP du noyau se déclarent ignorés si
 `docker compose` n'est pas démarré. `cargo test` est lancé par `run_tests.sh` si `cargo` est
 présent.
 

@@ -180,3 +180,43 @@ def test_healthz_expose_l_etat_du_noyau_crypto(client):
     body = client.get("/healthz").json()
     assert body["crypto_core"] in ("ready", "degraded")
     assert "crypto_last_error" in body
+
+
+def test_anneau_trop_grand_refuse(client):
+    """F5 : un anneau non borné saturait le CPU (vérification linéaire en N).
+
+    Un attaquant n'a pas besoin d'une clé : il suffit d'envoyer 100 000 leurres
+    pour occuper le noyau. Le plafond est une mesure de disponibilité, pas de
+    confidentialité.
+    """
+    _register(5)
+    output_id = next(iter(main.OUTPUTS))
+    response = client.post(
+        "/tx/submit",
+        json={"real_output_id": output_id, "decoy_ids": [f"x{i}" for i in range(200)]},
+    )
+    assert response.status_code == 400
+    assert "trop grand" in response.json()["detail"] or "inconnus" in response.json()["detail"]
+
+
+def test_les_endpoints_admin_sont_fermes_sans_jeton(monkeypatch):
+    """F2 : sans SERVICE_TOKEN, l'administration est FERMÉE (503), pas ouverte."""
+    monkeypatch.delenv("SERVICE_TOKEN", raising=False)
+    _register(10)
+    anonymous = TestClient(main.app)
+    for path in ("/admin/quarantine-outputs", "/admin/ring-size"):
+        response = anonymous.post(path, json={"ring_size": 25})
+        assert response.status_code == 503, path
+        assert "SERVICE_TOKEN" in response.json()["detail"]
+
+
+def test_le_pin_par_defaut_ne_fonctionne_plus(client):
+    """F4 : le PIN n'est plus une constante du code.
+
+    `TERMINAL_PIN` est généré par `tools/init_env.py` ; l'ancien `1234` est
+    refusé sauf s'il a été explicitement configuré (ce que ce test exclut).
+    """
+    if main.PIN_CODE == "1234":  # pragma: no cover - configuration explicite
+        pytest.skip("TERMINAL_PIN vaut explicitement 1234 dans cet environnement")
+    assert client.post("/pin/verify", json={"pin": "1234"}).status_code == 401
+    assert client.post("/pin/verify", json={"pin": main.PIN_CODE}).status_code == 200

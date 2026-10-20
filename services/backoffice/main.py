@@ -824,6 +824,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if not changes:
             return {"user": public_user(target), "changed": []}
 
+        # Liste blanche : les colonnes viennent d'un modèle Pydantic, mais
+        # une garantie locale se relit mieux qu'un raisonnement global.
+        allowed = {"role", "active", "password_hash"}
+        assert set(changes) <= allowed, f"colonne non autorisée : {set(changes) - allowed}"
         assignments = ", ".join(f"{column} = ?" for column in changes)
         db.run(
             f"UPDATE users SET {assignments} WHERE id = ?",

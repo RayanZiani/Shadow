@@ -1,6 +1,6 @@
 # TODO — ce qui reste à faire
 
-> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (141 tests verts,
+> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (148 tests verts,
 > chaîne P0 en 6,6-7,2 s, 18 services `Up`).
 > **Mise à jour du 20/10 (soir)** : les nouvelles règles du jury changent le
 > périmètre — boutique en base, front vitrine, back d'administration, paiement
@@ -40,12 +40,13 @@ trous qu'un jury CYBER exploite en quelques minutes.
 | `/incident` et `/state/report` **ouverts** | playbook déclenché par n'importe qui (déni de service) | idem |
 | **PIN `1234` codé en dur** | terminal ouvert avec une valeur publique | `TERMINAL_PIN` généré par `tools/init_env.py`, blocage après 5 échecs |
 | **Anneau non borné** sur `/tx/submit` | 100 000 leurres = saturation CPU | plafond à 64 leurres |
+| `/ingest` du détecteur **ouvert** | évasion : diluer la fenêtre pour empêcher la détection | `SERVICE_TOKEN` obligatoire |
 
-- [ ] **Audit de sécurité systématique** — M
-  Checklist OWASP ASVS niveau 1 sur les 18 services : entrées, en-têtes,
-  CORS, méthodes HTTP, taille des corps, erreurs qui fuient des chemins.
-  **Acceptation** : un tableau « contrôle → état → preuve » dans
-  `docs/SECURITE.md`, zéro `TODO` de sécurité dans le code.
+- [x] **Audit de sécurité systématique** — M
+  `docs/SECURITE.md` : 6 failles fermées (chacune avec son test), mesures par
+  catégorie (auth, autorisation, données, en-têtes, secrets), **7 limites
+  assumées et écrites**, et une recette CYBER en 6 commandes `curl`.
+  **Reste** : un audit externe, hors périmètre étudiant.
 
 - [ ] **Scan de dépendances** — S
   `pip-audit` sur les `requirements.txt`, `cargo audit` sur le noyau,

@@ -215,10 +215,10 @@ python3 -m venv .venv
 ./tools/run_tests.sh
 ```
 
-**141 tests** : bus d'états et flux d'incident (18), détecteur ML (11), API de
-paiement (10), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
+**148 tests** : bus d'états et flux d'incident (18), détecteur ML (12), API de
+paiement (13), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
 (9), honeypot (4), auth-service (9), **back-office (25)**, **boutique (17)**,
-**assistant RAG (10)**.
+**assistant RAG (12)**.
 
 > `run_tests.sh` lance chaque suite **dans le dossier de son service**. C'est
 > volontaire : plusieurs services exposent un `main.py`, et un `pytest services/`

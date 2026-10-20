@@ -144,3 +144,32 @@ def test_healthz_declare_le_mode_de_generation(client):
     assert health["generation"]["ollama"] in {"unreachable", "ready"} or health[
         "generation"
     ]["ollama"].startswith("http_")
+
+
+def test_la_reponse_donne_la_duree_et_cite_le_rapport(retriever):
+    """Le critère d'acceptation de la consigne, vérifié mot pour mot.
+
+    « combien de temps prend la reprise ? » doit répondre « 6,6 à 7,2 s » **en
+    citant** `docs/RAPPORT.md`. Sans Ollama, c'est le mode extractif qui répond :
+    il doit donc trouver la phrase, pas seulement le bon document.
+    """
+    question = "combien de temps prend la reprise ?"
+    results = retriever.search(question, limit=4)
+    answer = extractive_answer(question, results)
+    assert "6,6 à 7,2" in answer, answer
+    assert "[docs/RAPPORT.md]" in answer, answer
+
+
+def test_les_phrases_ne_sont_pas_coupees_par_le_retour_a_la_ligne(retriever):
+    """Les documents sont coupés à 80 colonnes.
+
+    Découper les phrases sur `\n` produisait « … transaction de preuve — prend »
+    puis « 6,6 à 7,2 secondes… » : deux fragments, aucun lisible. Le découpage
+    recolle d'abord les lignes d'un paragraphe.
+    """
+    question = "combien de temps prend la reprise ?"
+    results = retriever.search(question, limit=4)
+    answer = extractive_answer(question, results)
+    first = answer.split(" [")[0]
+    assert first.rstrip().endswith((".", "secondes", "humaine.", "minutes.")), first
+    assert not first.startswith(("preuve —", "prend ", "—")), first

@@ -60,6 +60,8 @@ run "waf (déception active)" \
   bash -c "cd '$ROOT/services/waf' && '$PY' -m pytest test_waf.py -q"
 run "hardware (contrat série)" \
   bash -c "cd '$ROOT/hardware/bridge' && '$PY' -m pytest test_hardware_bridge.py -q"
+run "encodage des fichiers livrés (aucun mojibake)" \
+  bash -c "cd '$ROOT' && '$PY' tools/check_encoding.py"
 
 if command -v cargo >/dev/null 2>&1; then
   run "monero-crypto-core (Rust, unitaires)" \

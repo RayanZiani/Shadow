@@ -183,3 +183,27 @@ def test_seuil_jamais_code_en_dur():
     source = inspect.getsource(detector)
     assert 'THRESHOLD["threshold"]' in source
     assert detector.MODEL_STATE in ("ready", "degraded")
+
+
+def test_ingest_exige_le_jeton_de_service(monkeypatch):
+    """F6 : /ingest ouvert permettait d'ÉVADER la détection.
+
+    En inondant la fenêtre d'observations « normales », on dilue le signal d'une
+    attaque jusqu'à passer sous le seuil. L'inverse est possible aussi :
+    déclencher le playbook à volonté en forgeant des anomalies.
+    Le détecteur observe le SI ; il ne doit pas être une entrée du SI.
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("SERVICE_TOKEN", raising=False)
+    anonymous = TestClient(detector.app)
+    response = anonymous.post("/ingest", json=_event())
+    assert response.status_code == 503
+    assert "SERVICE_TOKEN" in response.json()["detail"]
+
+    monkeypatch.setenv("SERVICE_TOKEN", "jeton-de-test")
+    wrong = TestClient(detector.app, headers={"X-Service-Token": "faux"})
+    assert wrong.post("/ingest", json=_event()).status_code == 401
+
+    good = TestClient(detector.app, headers={"X-Service-Token": "jeton-de-test"})
+    assert good.post("/ingest", json=_event()).status_code == 200

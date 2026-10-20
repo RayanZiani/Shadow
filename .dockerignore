@@ -1,0 +1,35 @@
+# Contexte de construction : la RACINE du dépôt (rag-assistant a besoin de
+# docs/ et README.md pour construire son index). Ce fichier évite d'envoyer au
+# démon Docker 500 Mo de node_modules, .venv, cibles Rust et artefacts de build.
+**/node_modules/
+**/.venv/
+**/venv/
+**/dist/
+**/target/
+**/.pio/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/data/
+.git/
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.stl
+*.gcode
+*.3mf
+services/ml-detector/baseline.jsonl
+services/ml-detector/scaler.joblib
+services/ml-detector/isolation_forest.joblib
+services/ml-detector/autoencoder.pt
+services/ml-detector/threshold_runtime.json
+services/backoffice/models/*.onnx
+hardware/led_bandeau_esp8266/src/secrets.h
