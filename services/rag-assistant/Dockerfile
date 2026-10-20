@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/rag-assistant/ .
 COPY README.md /app/corpus/README.md
+COPY TODO.md /app/corpus/TODO.md
 COPY docs/ /app/corpus/docs/
 COPY services/backoffice/README.md /app/corpus/services-backoffice.md
 COPY services/shop-api/README.md /app/corpus/services-shop.md

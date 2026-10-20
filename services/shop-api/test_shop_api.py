@@ -317,3 +317,73 @@ def test_healthz_declare_le_moteur_de_base(client):
     assert health["status"] == "ok"
     assert health["database"] == "sqlite"
     assert health["products"] >= 6
+
+
+# ---------------------------------------------------------------------------
+# Concurrence : la promesse « pas de survente » doit tenir sous charge
+# ---------------------------------------------------------------------------
+def test_achats_simultanes_ne_survendent_pas(app, client, stub):
+    """N acheteurs simultanés sur le dernier article.
+
+    Le code réserve le stock dans une transaction avec
+    `UPDATE ... WHERE stock >= ?` et vérifie le nombre de lignes affectées.
+    Ce test le prouve sous concurrence réelle (threads), pas seulement en
+    séquence : c'est la différence entre « ça a l'air correct » et « c'est
+    correct ».
+
+    Ce qui doit être vrai :
+      * une seule commande payée ;
+      * le stock tombe à 0, jamais en dessous ;
+      * les autres acheteurs reçoivent 409, pas une erreur 500.
+    """
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    # On met un article à 1 en stock, puis on l'attaque à 5 threads.
+    # Le fixture `client` a déjà démarré l'application (lifespan) : les clients
+    # créés dans les threads n'ont donc pas besoin de la relancer.
+    db = app.state.db
+    db.run("UPDATE products SET stock = 1 WHERE sku = 'VAULT-LIC'")
+    product = _product(client, "VAULT-LIC")
+
+    statuses: list[int] = []
+    lock = threading.Lock()
+
+    def buy() -> None:
+        # Chaque thread a son propre client : TestClient n'est pas réentrant.
+        buyer = TestClient(app)
+        cart = buyer.post("/cart").json()["cart"]
+        added = buyer.post(
+            f"/cart/{cart['token']}/items",
+            json={"product_id": product["id"], "quantity": 1},
+        )
+        if added.status_code != 200:
+            with lock:
+                statuses.append(added.status_code)
+            return
+        response = buyer.post("/checkout", json={"cart_token": cart["token"]})
+        with lock:
+            statuses.append(response.status_code)
+
+    threads = [threading.Thread(target=buy) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    paid = statuses.count(201)
+    refused = sum(1 for code in statuses if code in (409, 400))
+
+    assert paid == 1, f"une seule commande doit aboutir, obtenu {statuses}"
+    assert paid + refused == len(statuses), f"aucune erreur 500 attendue : {statuses}"
+    assert _product(client, "VAULT-LIC")["stock"] == 0
+
+    # Et la base le confirme : une seule commande payée pour cet article.
+    orders = db.query(
+        "SELECT o.reference FROM orders o "
+        "JOIN order_items oi ON oi.order_id = o.id "
+        "JOIN products p ON p.id = oi.product_id "
+        "WHERE p.sku = 'VAULT-LIC' AND o.status = 'paid'"
+    )
+    assert len(orders) == 1, orders

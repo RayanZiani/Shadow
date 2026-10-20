@@ -1,0 +1,72 @@
+# Règles d'alerte sur les LOGS — évaluées par Loki, poussées à Alertmanager.
+#
+# Complément de `alert.rules.yml` (métriques Prometheus). Une métrique dit
+# « combien » ; un log dit « pourquoi ». Ces règles couvrent les erreurs qu'aucune
+# métrique ne porte : un refus de paiement, une exception, un secret absent.
+#
+# Comme pour Prometheus, la liste des alertes qui déclenchent une remédiation
+# est FERMÉE et vit dans `remediation-engine` (`ACTIONABLE_ALERTS`). Une alerte
+# de log inconnue du moteur est journalisée sans ouvrir d'incident.
+
+groups:
+  - name: logs-erreurs
+    interval: 30s
+    rules:
+      - alert: ErreurApplicative
+        # Une seule ligne ERROR suffit : en démonstration, on n'a pas le temps
+        # d'attendre un taux.
+        expr: |
+          sum by (service) (count_over_time({service=~".+"} |= "ERROR" [2m])) > 0
+        for: 30s
+        labels:
+          severity: warning
+          source: loki
+        annotations:
+          summary: "{{ $labels.service }} a journalisé une erreur"
+          description: >-
+            Chercher dans Grafana Explore :
+            `{service="{{ $labels.service }}"}` puis filtrer `ERROR`.
+
+      - alert: PaiementRefuse
+        # `payment-api` journalise un 502 quand le registre refuse un paiement.
+        # C'est le signal le plus direct d'une chaîne cassée côté boutique.
+        expr: |
+          sum(count_over_time({service="payment-api"} |= "paiement refusé" [3m])) > 0
+        for: 0s
+        labels:
+          severity: critical
+          source: loki
+        annotations:
+          summary: "un paiement a été refusé par le registre"
+          description: >-
+            Vérifier `curl localhost:8080/healthz` (`crypto_core`) et
+            `curl localhost:8087/admin/orders` (commandes `failed`).
+
+      - alert: RemonteeDeBouclier
+        # Un panic Rust se termine par « thread 'main' panicked ». Le conteneur
+        # reste « Up » quelques secondes : sans cette règle, on ne voit rien.
+        expr: |
+          sum(count_over_time({service=~".+"} |= "panicked" [5m])) > 0
+        for: 0s
+        labels:
+          severity: critical
+          source: loki
+        annotations:
+          summary: "{{ $labels.service }} a paniqué"
+          description: >-
+            `docker compose logs --tail=100 {{ $labels.service }}`. Un panic
+            est toujours un défaut de code, jamais une attaque réussie.
+
+      - alert: JetonServiceAbsentDansLesLogs
+        expr: |
+          sum(count_over_time({service=~".+"} |= "SERVICE_TOKEN non configuré" [5m])) > 0
+        for: 0s
+        labels:
+          severity: critical
+          source: loki
+        annotations:
+          summary: "un service refuse de servir faute de jeton de service"
+          description: >-
+            `python tools/init_env.py` puis `docker compose up -d`. Les
+            endpoints d'administration sont fermés (503) tant que le jeton
+            n'est pas configuré.

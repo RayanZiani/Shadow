@@ -132,3 +132,29 @@ def test_le_journal_des_alertes_est_consultable(stub_incident):
             assert journal.json()["count"] >= 1
 
     asyncio.run(scenario())
+
+
+def test_une_alerte_de_log_est_actionnable(stub_incident):
+    """Les règles Loki poussent au même Alertmanager, donc au même moteur.
+
+    Une erreur applicative (« paiement refusé ») n'a pas de métrique dédiée :
+    sans cette route, elle resterait dans un fichier que personne ne lit.
+    """
+    async def scenario():
+        async with _client() as client:
+            response = await client.post("/alert", json=_alert("PaiementRefuse"))
+            assert response.json()["acted"] == 1
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert stub_incident == ["payment_refused"]
+
+
+def test_un_panic_dans_les_logs_ouvre_un_incident(stub_incident):
+    async def scenario():
+        async with _client() as client:
+            await client.post("/alert", json=_alert("RemonteeDeBouclier"))
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert stub_incident == ["panic_in_logs"]

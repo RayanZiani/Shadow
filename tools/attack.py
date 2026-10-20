@@ -199,6 +199,13 @@ def run(kind: str) -> int:
         if kind in ("malformed", "all"):
             summary["malformed"] = attack_malformed(client)
 
+        if kind == "shop":
+            # Les attaques boutique attaquent un autre service : elles ont leur
+            # propre session et leur propre bilan. On leur passe la main.
+            from attack_shop import run_shop
+
+            return run_shop()
+
         print(json.dumps(summary, indent=2, ensure_ascii=False))
 
         if kind == "replay" and not summary.get("replay", {}).get("blocked"):
@@ -216,7 +223,7 @@ if __name__ == "__main__":
         "kind",
         nargs="?",
         default="poison",
-        choices=["poison", "replay", "burst", "malformed", "all", "list", "reset"],
+        choices=["poison", "replay", "burst", "malformed", "shop", "all", "list", "reset"],
     )
     parser.add_argument("--target", default=TARGET, help="URL du WAF")
     args = parser.parse_args()
@@ -227,6 +234,7 @@ if __name__ == "__main__":
         print("burst      rafale automatisée (cadence machine)")
         print("malformed  entrées invalides (le noyau doit répondre 400, pas paniquer)")
         print("all        les quatre, dans l'ordre de la démonstration")
+        print("shop       les 6 attaques sur la boutique (panier, prix, stock, historique)")
         print("reset      désarme la déception (entre deux répétitions)")
         raise SystemExit(0)
 

@@ -1,6 +1,6 @@
 # TODO — ce qui reste à faire
 
-> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (148 tests verts,
+> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (151 tests verts,
 > chaîne P0 en 6,6-7,2 s, 18 services `Up`).
 > **Mise à jour du 20/10 (soir)** : les nouvelles règles du jury changent le
 > périmètre — boutique en base, front vitrine, back d'administration, paiement
@@ -298,13 +298,26 @@ aujourd'hui (le registre est en mémoire), donc ce n'est pas urgent — mais si
 **Acceptation** : `prometheus-community/postgres_exporter` ajouté, cible `up`,
 dashboard Grafana avec connexions et taille de base.
 
-### 2.2 Loki / Promtail non configurés — M
+### 2.2 Loki / Promtail — fait
 
-Les conteneurs démarrent mais ne collectent rien (aucune config de scrape de
-logs). Deux options : configurer `promtail` sur les logs Docker, ou retirer les
-deux services du compose pour ne pas afficher du vide.
+Configurés pour de vrai (`observability/loki.yml`, `promtail.yml`,
+`loki-rules.yml`) : Promtail lit les logs de tous les conteneurs via le socket
+Docker **en lecture seule**, Loki les stocke 30 jours, Grafana Explore les
+affiche (source Loki provisionnée, liée à Prometheus), et **4 règles de logs**
+poussent à Alertmanager → remédiation (`PaiementRefuse`,
+`JetonServiceAbsentDansLesLogs`, `RemonteeDeBouclier`, `ErreurApplicative`).
 
-**Acceptation** : les logs de `payment-api` sont visibles dans Grafana Explore.
+Reste à vérifier sur la pile démarrée :
+
+- [ ] **Vérifier les logs dans Grafana Explore** — S
+  Ouvrir `localhost:3001` → Explore → source Loki → `{service="payment-api"}`.
+  **Acceptation** : les lignes défilent, le niveau `ERROR` est filtrable, et
+  `{service="shop-api"} |= "commande"` montre les achats.
+
+- [ ] **Provoquer une alerte de log** — S
+  `docker compose stop monero-crypto-core`, puis acheter un article.
+  **Acceptation** : `PaiementRefuse` apparaît dans Alertmanager (9093) et
+  `POST /alert` du moteur renvoie `acted: 1`.
 
 ### 2.3 Test de charge — S
 

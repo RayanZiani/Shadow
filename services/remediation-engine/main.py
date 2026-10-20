@@ -185,6 +185,7 @@ async def handle_incident(payload: IncidentPayload):
 # incident : sinon le premier avertissement bénin lancerait un playbook.
 
 ACTIONABLE_ALERTS = {
+    # --- métriques Prometheus ---
     "ModeleMLIndisponible": "model_unavailable",
     "WebhookRemediationCasse": "webhook_broken",
     "NoyauCryptoIndisponible": "crypto_unavailable",
@@ -193,6 +194,10 @@ ACTIONABLE_ALERTS = {
     "DeceptionNonArmee": "deception_not_armed",
     "ReconnaissanceFacialeIndisponible": "face_engine_unavailable",
     "RemediationEnEchec": "remediation_failed",
+    # --- logs (Loki) : une erreur applicative n'a pas de métrique dédiée ---
+    "PaiementRefuse": "payment_refused",
+    "JetonServiceAbsentDansLesLogs": "service_token_missing",
+    "RemonteeDeBouclier": "panic_in_logs",
 }
 
 # Alertmanager réémet la même alerte toutes les 4 h ; on borne les doublons.

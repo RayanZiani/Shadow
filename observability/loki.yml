@@ -1,0 +1,69 @@
+# Loki — stockage des logs et règles d'alerte
+#
+# Deux responsabilités :
+#   1. stocker les logs poussés par Promtail (Grafana Explore) ;
+#   2. évaluer des règles de logs et pousser les alertes à Alertmanager.
+#
+# Pourquoi les règles de logs sont ici et pas seulement dans Prometheus : une
+# erreur applicative (« registre indisponible », « paiement refusé ») n'a pas de
+# métrique dédiée. Sans règle de logs, elle reste dans un fichier que personne
+# ne lit pendant la démonstration. C'est précisément ce que le jury appelle
+# « gérer les logs des outils de supervision de sorte à agir ».
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # 30 jours de rétention : la démonstration dure 3 minutes, mais un juré peut
+  # vouloir relire la veille.
+  retention_period: 720h
+  reject_old_samples: false
+  allow_structured_metadata: true
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+  rule_path: /loki/rules-temp
+  # Les alertes de logs partent vers le MÊME Alertmanager que Prometheus :
+  # un seul chemin de remédiation, donc un seul comportement à expliquer.
+  alertmanager_url: http://alertmanager:9093
+  ring:
+    kvstore:
+      store: inmemory
+  enable_api: true
+
+analytics:
+  reporting_enabled: false

@@ -469,7 +469,7 @@ intervention humaine.
 | `burst` (50 ms d'intervalle) | 40 transactions, 9,7 tx/s, aucune erreur |
 | `malformed` (anneau vide, clés invalides) | **400** propre, service toujours vivant |
 
-### 6.3 Tests automatisés — 148
+### 6.3 Tests automatisés — 151
 
 | Suite | Nombre | Ce qu'elle prouve |
 |---|---|---|
@@ -484,9 +484,9 @@ intervention humaine.
 | `shadow-api` | 4 | honeypot jamais repéré, journal borné |
 | `auth-service` | 9 | clé Vault, 503 si Vault muet, cache et rotation |
 | `backoffice` | **25** | parcours identifiant → visage → mot de passe, refus et caméra éteinte, blocage 5 min, LED (vert clignotant, vert fixe, rouge ×10, rouge fixe) avec expiration, habilitations, dernier admin protégé, audit sans secret |
-| `shop-api` | **17** | catalogue en base, panier borné, achat, stock réservé puis restitué, survente impossible, historique par capability token, administration |
+| `shop-api` | **18** | catalogue en base, panier borné, achat, stock réservé puis restitué, survente impossible, historique par capability token, administration |
 | `rag-assistant` | **12** | index BM25, question de référence → bon document, citations, mode dégradé |
-| `remediation-engine` (SIEM) | **6** | alerte actionnable → incident, alerte de confort ignorée, anti-rebond, jeton obligatoire |
+| `remediation-engine` (SIEM) | **8** | alerte actionnable → incident, alerte de confort ignorée, anti-rebond, jeton obligatoire |
 | `ml-detector` (`/ingest`) | **1** | la télémétrie n'est acceptée qu'avec le jeton de service (évasion impossible) |
 | `payment-api` (durcissement) | **3** | anneau borné, administration fermée sans jeton, PIN par défaut refusé |
 
@@ -634,6 +634,6 @@ python tools/attack.py all
 | Conteneurs | 18 |
 | Lignes de code (Python, Rust, JSX, C++, firmware) | ~13 300 |
 | Routes HTTP | ~100 (dont 13 en Rust, 21 back-office, 14 boutique) |
-| Tests automatisés | 148 |
+| Tests automatisés | 151 |
 | Fenêtres d'entraînement | 1 129 |
 | Durée de la chaîne P0 | 6,6 à 7,2 s (limite 90 s) |
