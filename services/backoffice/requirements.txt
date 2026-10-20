@@ -1,0 +1,7 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+numpy==2.1.1
+# OpenCV en version "headless" : aucun serveur graphique dans l'image.
+# YuNet (détection) et SFace (descripteur 128-d) sont fournis par ce wheel.
+opencv-python-headless==4.10.0.84

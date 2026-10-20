@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import PinPad from "./PinPad.jsx";
+import AdminPanel from "./auth/AdminPanel.jsx";
+import LoginPage from "./auth/LoginPage.jsx";
+import { api } from "./auth/api.js";
+import { clearSession, readToken } from "./auth/session.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
 const REMEDIATION_BASE = import.meta.env.VITE_REMEDIATION_BASE || "http://localhost:8084";
@@ -83,7 +87,7 @@ function LedRing({ state, seq }) {
   );
 }
 
-export default function App() {
+function Supervision({ user, onLogout, onOpenAdmin }) {
   const [probeStatus, setProbeStatus] = useState(null);
   const [systemState, setSystemState] = useState({ seq: 0, state: "IDLE", detail: {} });
   const [ml, setMl] = useState(null);
@@ -96,16 +100,37 @@ export default function App() {
 
   // 1. État du système : SSE depuis remediation-engine (une seule vérité,
   //    partagée avec le terminal physique).
+  //
+  //    Au (re)connect, on relit `/state` : le flux SSE ne rejoue pas le dernier
+  //    état. Sans cette relecture, un dashboard ouvert APRÈS un changement
+  //    (cas de la page protégée par l'authentification) resterait sur « INIT »
+  //    alors que le système est en NORMAL_TX ou en REMEDIATING. Le pont
+  //    hardware fait exactement la même chose.
   useEffect(() => {
     const source = new EventSource(`${REMEDIATION_BASE}/events`);
 
-    source.onopen = () => setConnected(true);
+    const applyEvent = (data) => {
+      if (typeof data?.seq !== "number" || data.seq <= lastSeq.current) return;
+      lastSeq.current = data.seq;
+      setSystemState(data);
+    };
+
+    const resync = async () => {
+      try {
+        const response = await fetch(`${REMEDIATION_BASE}/state`);
+        if (response.ok) applyEvent(await response.json());
+      } catch {
+        // moteur injoignable : le flux SSE reprendra quand il reviendra
+      }
+    };
+
+    source.onopen = () => {
+      setConnected(true);
+      resync();
+    };
     source.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        if (data.seq <= lastSeq.current) return;
-        lastSeq.current = data.seq;
-        setSystemState(data);
+        applyEvent(JSON.parse(event.data));
         setConnected(true);
       } catch {
         // trame illisible : on ignore, le flux suivant corrigera
@@ -190,6 +215,27 @@ export default function App() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {user && (
+            <span className="text-ink/70 text-xs">
+              {user.username} · {user.role}
+            </span>
+          )}
+          {onOpenAdmin && (
+            <button
+              onClick={onOpenAdmin}
+              className="bg-white text-ink text-xs font-bold rounded-lg px-3 py-1.5 border border-rule"
+            >
+              Habilitations
+            </button>
+          )}
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="bg-ink text-white text-xs font-bold rounded-lg px-3 py-1.5"
+            >
+              Déconnexion
+            </button>
+          )}
           <span className={`text-xs font-bold ${connected ? "text-emerald" : "text-crimson"}`}>
             {connected ? "SSE OK" : "SSE KO"}
           </span>
@@ -313,5 +359,106 @@ export default function App() {
         </Card>
       </div>
     </div>
+  );
+}
+
+/**
+ * Racine de l'application — deux écrans, une seule porte.
+ *
+ * Rien du tableau de supervision n'est rendu avant l'authentification : le
+ * back-office est protégé à l'écran, et les appels aux services (8080, 8083,
+ * 8084) ne partent qu'une fois la session ouverte. Ce n'est pas une frontière
+ * de sécurité — les services de démonstration restent joignables — mais cela
+ * évite qu'un écran de supervision s'affiche devant quelqu'un qui n'a pas
+ * franchi la reconnaissance faciale.
+ */
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [healthError, setHealthError] = useState(null);
+  const [view, setView] = useState("supervision");
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const boot = async () => {
+      try {
+        const status = await api.health();
+        if (!cancelled) {
+          setHealth(status);
+          setHealthError(null);
+        }
+      } catch (error) {
+        if (!cancelled) setHealthError(error.message);
+      }
+      // Une session en storage n'est valide que si le serveur la reconnaît :
+      // un redémarrage du back-office ou une révocation la rend invalide.
+      if (readToken()) {
+        try {
+          const me = await api.me();
+          if (!cancelled) setUser(me.user);
+        } catch {
+          clearSession();
+        }
+      }
+      if (!cancelled) setChecking(false);
+    };
+    boot();
+    const id = window.setInterval(async () => {
+      try {
+        setHealth(await api.health());
+        setHealthError(null);
+      } catch (error) {
+        setHealthError(error.message);
+      }
+    }, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  const logout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      // déconnexion locale même si le serveur est muet
+    }
+    clearSession();
+    setUser(null);
+    setView("supervision");
+  };
+
+  if (checking) {
+    return (
+      <div className="min-h-screen bg-page flex items-center justify-center">
+        <p className="text-ink font-bold">Vérification de la session…</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="relative">
+        {healthError && (
+          <div className="absolute top-0 left-0 right-0 bg-crimson text-white text-center text-xs font-bold py-1">
+            back-office injoignable ({healthError}) — démarrez le service sur le PC hôte
+          </div>
+        )}
+        <LoginPage health={health} onAuthenticated={setUser} />
+      </div>
+    );
+  }
+
+  if (view === "admin") {
+    return <AdminPanel currentUser={user} onLogout={logout} />;
+  }
+
+  return (
+    <Supervision
+      user={user}
+      onLogout={logout}
+      onOpenAdmin={user.role === "admin" ? () => setView("admin") : undefined}
+    />
   );
 }
