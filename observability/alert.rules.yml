@@ -120,6 +120,69 @@ groups:
             Vérifier l'étape 1 du playbook (`/admin/redirect` sur le WAF) et
             `GET localhost:8085/admin/state`.
 
+  # --- Back-office (consigne additionnelle) --------------------------------
+  - name: backoffice
+    rules:
+      # Le moteur facial n'est pas chargé : plus aucune authentification
+      # possible. C'est bloquant, donc critique.
+      - alert: ReconnaissanceFacialeIndisponible
+        expr: bo_face_engine_ready == 0
+        for: 1m
+        labels: { severity: critical, pilier: CYBER }
+        annotations:
+          summary: "back-office : moteur facial indisponible"
+          description: >-
+            Les modèles YuNet/SFace sont absents ou illisibles. Vérifier
+            `curl localhost:8086/healthz` → `face_error`, puis
+            `docker compose build backoffice`.
+
+      # Le moteur de développement (stub) est actif : la reconnaissance est
+      # factice. Acceptable en recette, JAMAIS en soutenance.
+      - alert: ReconnaissanceFacialeFactice
+        expr: bo_face_engine_stub == 1
+        for: 5m
+        labels: { severity: warning, pilier: CYBER }
+        annotations:
+          summary: "back-office : moteur facial STUB actif"
+          description: >-
+            `BO_FACE_ENGINE=stub` : aucun visage n'est réellement vérifié.
+            Reconstruire l'image avec les modèles ONNX.
+
+      # Aucun administrateur enrôlé : le back-office est inaccessible.
+      - alert: AucunAdministrateurEnrole
+        expr: bo_bootstrap_required == 1
+        for: 10m
+        labels: { severity: warning, pilier: CYBER }
+        annotations:
+          summary: "back-office : aucun administrateur avec visage"
+          description: >-
+            Renseigner BO_BOOTSTRAP_TOKEN puis ouvrir le back-office pour
+            enrôler le premier administrateur.
+
+      # Des comptes sont bloqués : soit une vraie attaque, soit une caméra
+      # mal réglée. Dans les deux cas, il faut le voir avant la démo.
+      - alert: ComptesBloques
+        expr: bo_lockouts_active > 0
+        for: 2m
+        labels: { severity: warning, pilier: CYBER }
+        annotations:
+          summary: "{{ $value }} compte(s) back-office bloqué(s)"
+          description: >-
+            Blocage de 5 minutes après 2 échecs. Débloquer depuis l'écran
+            « Habilitations » ou vérifier la caméra du PC hôte.
+
+      # Le bandeau LED n'appelle plus le back-office : l'objet est débranché
+      # ou a perdu le WiFi. Non bloquant par conception, mais à savoir.
+      - alert: BandeauLedSilencieux
+        expr: bo_led_last_seen_seconds > 30
+        for: 2m
+        labels: { severity: warning, pilier: DEV }
+        annotations:
+          summary: "le bandeau LED ESP8266 ne répond plus"
+          description: >-
+            Vérifier l'alimentation et le WiFi de l'ESP8266 (`pio device
+            monitor`). L'authentification n'en dépend pas.
+
   - name: integrite
     rules:
       # Un service qui redémarre en boucle : c'est ainsi qu'un panic du noyau

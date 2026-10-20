@@ -41,6 +41,19 @@ services/monero-crypto-core/target/
 *.gcode
 *.3mf
 
+# --- Back-office : données locales et secrets de la carte ---
+# La base SQLite vit dans le volume Docker `bo-data` ; en local, dans data/.
+services/backoffice/data/
+services/backoffice/*.db
+services/backoffice/*.db-wal
+services/backoffice/*.db-shm
+# Les modèles faciaux (38 Mo) sont téléchargés et vérifiés à la construction de
+# l'image : voir services/backoffice/Dockerfile.
+services/backoffice/models/*.onnx
+# secrets.h contient le mot de passe WiFi du point d'accès RESILIENCE-G<n>.
+hardware/led_bandeau_esp8266/src/secrets.h
+hardware/led_bandeau_esp8266/.pio/
+
 # --- OS / éditeurs ---
 .DS_Store
 Thumbs.db

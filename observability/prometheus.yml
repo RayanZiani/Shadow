@@ -55,3 +55,9 @@ scrape_configs:
     static_configs:
       - targets: ["auth-service:8082"]
         labels: { service: auth-service, pilier: CYBER }
+
+  # --- Back-office (consigne additionnelle) ------------------------------
+  - job_name: backoffice
+    static_configs:
+      - targets: ["backoffice:8086"]
+        labels: { service: backoffice, pilier: CYBER }

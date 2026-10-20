@@ -39,6 +39,7 @@ PAYMENT = "http://localhost:8080"
 DETECTOR = "http://localhost:8083"
 REMEDIATION = "http://localhost:8084"
 WAF = "http://localhost:8085"
+BACKOFFICE = "http://localhost:8086"
 
 LIMIT_SECONDS = 90.0
 POLL = 0.5
@@ -83,6 +84,29 @@ def check_services(client: httpx.Client) -> dict:
         f"· crypto {services['payment-api'].get('crypto_core')}"
     )
     return services
+
+
+def check_backoffice(client: httpx.Client) -> dict:
+    """Contrôle NON bloquant du back-office (consigne additionnelle).
+
+    Il n'est pas dans la chaîne P0 : son absence ne doit pas faire échouer la
+    démonstration de la remédiation. Mais le jour J, il faut savoir s'il est
+    prêt — d'où ces trois champs dans le résumé.
+    """
+    try:
+        health = client.get(f"{BACKOFFICE}/healthz", timeout=3.0).json()
+    except Exception:  # noqa: BLE001
+        log("back-office absent (non bloquant) — `docker compose up -d backoffice`")
+        return {"backoffice_reachable": False}
+    return {
+        "backoffice_reachable": True,
+        "backoffice_face_engine": health.get("face_engine"),
+        "backoffice_ready": bool(
+            health.get("status") == "ok"
+            and health.get("face_engine") == "ready"
+            and health.get("bootstrap_required") is False
+        ),
+    }
 
 
 def wait_clean_window(client: httpx.Client, timeout: float = 20.0) -> None:
@@ -273,6 +297,7 @@ def run() -> int:
             "attacker_routed_to_honeypot": deception_ok,
             "ansible_rc": last.get("ansible_rc"),
             "chain_complete": bool(proof_ok and deception_ok and recovery_s < LIMIT_SECONDS),
+            **check_backoffice(client),
         }
         print(json.dumps(summary, indent=2))
 

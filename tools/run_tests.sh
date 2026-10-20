@@ -7,6 +7,12 @@
 # Prérequis : un venv à la racine (voir README « Tests ») et, pour le noyau
 # cryptographique, cargo (rustup). Le script s'arrête au premier échec et
 # affiche un récapitulatif.
+#
+# Pourquoi service par service (et pas `pytest services/`) : chaque service
+# expose un `main.py`. Lancés dans le même processus, Python résoudrait
+# `import main` vers le premier module homonyme importé, et des tests
+# échoueraient pour une raison sans rapport avec le code testé. Ce script
+# exécute donc chaque suite dans son propre dossier, comme le ferait la CI.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,6 +48,8 @@ run "shadow-api (honeypot)" \
   bash -c "cd '$ROOT/services/shadow-api' && '$PY' -m pytest test_shadow_api.py -q"
 run "auth-service (gestion de la clé JWT)" \
   bash -c "cd '$ROOT/services/auth-service' && '$PY' -m pytest test_auth_service.py -q"
+run "backoffice (authentification visage + habilitations)" \
+  bash -c "cd '$ROOT/services/backoffice' && '$PY' -m pytest test_backoffice.py -q"
 run "waf (déception active)" \
   bash -c "cd '$ROOT/services/waf' && '$PY' -m pytest test_waf.py -q"
 run "hardware (contrat série)" \

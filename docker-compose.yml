@@ -20,6 +20,7 @@ volumes:
   vault-data:
   prometheus-data:
   grafana-data:
+  bo-data:
 
 services:
   # ---------- PILIER INFRA ----------
@@ -133,7 +134,35 @@ services:
       VITE_API_BASE: "http://localhost:8080"
       VITE_REMEDIATION_BASE: "http://localhost:8084"
       VITE_ML_BASE: "http://localhost:8083"
+      # Back-office : authentification visage + mot de passe. La caméra est
+      # celle du PC hôte, ouverte par le navigateur (getUserMedia). Ouvrir le
+      # dashboard par http://localhost:5173 : une IP LAN n'est pas un « contexte
+      # sécurisé » et le navigateur refuserait la caméra.
+      VITE_BACKOFFICE_BASE: "http://localhost:8086"
     ports: ["5173:5173"]
+    networks: [shadow-net]
+
+  # Back-office protégé : identifiant → reconnaissance faciale (caméra USB du
+  # PC hôte) → mot de passe. Gère aussi les habilitations et le bandeau LED
+  # ESP8266. Voir services/backoffice/README.md.
+  backoffice:
+    build: ./services/backoffice
+    environment:
+      BO_DB_PATH: "/data/backoffice.db"
+      BO_FACE_MODEL_DIR: "/app/models"
+      BO_FACE_ENGINE: ${BO_FACE_ENGINE:-opencv}
+      BO_FACE_THRESHOLD: ${BO_FACE_THRESHOLD:-0.40}
+      # Jeton d'enrôlement du PREMIER administrateur. Vide = bootstrap fermé
+      # (aucun compte ne peut être créé). À retirer de `.env` après usage.
+      BO_BOOTSTRAP_TOKEN: ${BO_BOOTSTRAP_TOKEN:-}
+      # 2 échecs puis 5 minutes, comme l'exige la consigne.
+      BO_MAX_ATTEMPTS: ${BO_MAX_ATTEMPTS:-2}
+      BO_LOCKOUT_SECONDS: ${BO_LOCKOUT_SECONDS:-300}
+      LED_DEVICE_TOKEN: ${LED_DEVICE_TOKEN:-led-demo-token}
+      BO_CORS_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+    volumes:
+      - bo-data:/data
+    ports: ["8086:8086"]
     networks: [shadow-net]
 
   # ---------- PILIER CYBER ----------
