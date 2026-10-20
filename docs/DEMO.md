@@ -131,7 +131,7 @@ qu'un assistant qui devine.
 
 ---
 
-## 3. Les quatre attaques disponibles
+## 3. Les attaques disponibles
 
 ```bash
 python tools/attack.py list      # rappel des commandes
@@ -140,7 +140,24 @@ python tools/attack.py replay    # rejeu de key image — bloqué en 409
 python tools/attack.py burst     # rafale automatisée — cadence machine
 python tools/attack.py malformed # entrées invalides — 400, jamais de panic
 python tools/attack.py all       # les quatre, pour une répétition
+python tools/attack.py shop      # 6 attaques sur la boutique (nouveau)
 ```
+
+`attack.py shop` répond à « les CYBER doivent essayer de faire tomber le SI » :
+six familles d'attaques sur la vitrine et son panier, en une seconde, avec un
+code de sortie. Chaque attaque vérifie le code HTTP **et** l'absence d'effet de
+bord (aucune commande créée, stock jamais négatif, service vivant).
+
+```
+quantités invalides      5/5 refusées (422)
+panier forgé             4/4 refusés
+injection SQL par SKU    3/3 refusées, catalogue intact
+historique d'autrui      3/3 refusés, 0 commande retournée
+course sur le stock      aucune survente
+falsification de prix    montant facturé = prix en base
+```
+
+Détail des failles fermées et des limites assumées : `docs/SECURITE.md`.
 
 | Attaque | Ce qu'elle exploite | Ce qui la détecte |
 |---|---|---|

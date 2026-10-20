@@ -100,10 +100,18 @@ Le SI est un **site vitrine de paiement**, pas seulement un tableau de bord :
   commandes avec leur preuve de paiement.
 
 ```bash
+python tools/init_env.py          # secrets aléatoires (SERVICE_TOKEN, PIN…)
+docker compose up -d
+python tools/e2e_shop.py          # achat complet, code de sortie 0
+python tools/attack.py shop       # 6 attaques, toutes refusées
 curl -s localhost:8087/products | python -m json.tool
 curl -s -X POST localhost:8091/ask -H 'Content-Type: application/json' \
      -d '{"q":"combien de temps prend la reprise ?"}'
 ```
+
+Sans Docker (poste de développement), la pile peut être lancée service par
+service ; `python tools/check_compose.py` vérifie d'abord la cohérence
+statique du compose (fichiers montés, volumes, dépendances, ports, alertes).
 
 ## Authentification du back-office (consigne additionnelle)
 
@@ -139,6 +147,7 @@ vérifie qu'une transaction client passe ensuite, et que l'attaquant est
 
 ```bash
 python tools/attack.py poison     # PC Attaquant : les 4 familles d'attaques
+python tools/attack.py shop       # 6 attaques sur la boutique (rôle CYBER)
 python tools/attack.py list
 ```
 

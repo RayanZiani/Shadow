@@ -24,6 +24,8 @@ trous qu'un jury CYBER exploite en quelques minutes, avec `curl`.
 | F5 | **Anneau non borné** sur `/tx/submit` | 100 000 leurres = saturation CPU (vérification linéaire en N) | plafond à 64 leurres, 400 explicite | `test_anneau_trop_grand_refuse` |
 | F6 | `/ingest` du détecteur **ouvert** | **évasion** : diluer la fenêtre avec de fausses observations normales pour empêcher la détection ; ou l'inverse, déclencher un playbook à volonté | `SERVICE_TOKEN` obligatoire | `test_ingest_exige_le_jeton` |
 
+| F7 | **Entrées non strictes** sur la boutique | une quantité `"3"` (chaîne) ou `2.5` était convertie silencieusement ; un SKU arbitraire (`X'; DROP TABLE …`) était stocké | `strict=True` sur les entiers, motif `^[A-Z0-9][A-Z0-9-]{1,31}$` sur le SKU → 422 | `test_une_quantite_en_chaine_est_refusee`, `test_un_sku_malforme_est_refuse` |
+
 **Pourquoi le fail-closed plutôt qu'un jeton par défaut** : un défaut connu est
 une faille (tout le monde le lit dans le dépôt). Un service qui refuse de servir
 tant qu'il n'est pas configuré est bruyant — et `tools/init_env.py` le configure
@@ -133,6 +135,23 @@ PY
 curl -s -o /dev/null -w "%{http_code}\n" localhost:8087/orders/CMD-0001                     # 404
 ```
 
+### Résultat mesuré des attaques sur la boutique
+
+```
+python tools/attack.py shop     # 6 familles, ~1 s
+
+quantités invalides      5/5 refusées (422)
+panier forgé             4/4 refusés (404, 307 sans jeton)
+injection SQL par SKU    3/3 refusées (422), catalogue intact
+historique d'autrui      3/3 refusés (404), 0 commande retournée
+course sur le stock      stock jamais négatif, aucune survente
+falsification de prix    montant facturé = prix en base, champ ignoré
+service                 toujours vivant
+```
+
+Ce n'est pas une preuve d'invulnérabilité — c'est la preuve que **ces six
+attaques-là** échouent, et qu'elles sont rejouables en une commande.
+
 Les tests automatisés couvrent les mêmes points : `services/auth-service`,
 `services/waf`, `services/payment-api`, `services/shadow-api`,
 `services/remediation-engine`, `services/backoffice`, `services/shop-api`.
@@ -143,6 +162,12 @@ Les tests automatisés couvrent les mêmes points : `services/auth-service`,
 
 | Attaque | Attendu | Où c'est testé |
 |---|---|---|
+| Quantité négative / absurde / en chaîne | **422** | `tools/attack.py shop` |
+| Panier forgé, jeton inventé | **404** | `tools/attack.py shop` |
+| Injection SQL par le SKU | **422**, catalogue intact | `tools/attack.py shop` |
+| Énumération de l'historique d'autrui | **404**, 0 commande | `tools/attack.py shop` |
+| Course sur le dernier article | une commande, stock jamais négatif | `tools/attack.py shop`, `test_achats_simultanes_ne_survendent_pas` |
+| Prix annoncé par le client | ignoré, total = base | `tools/attack.py shop` |
 | Rejeu de key image (double dépense) | **409**, key image consommée une fois | `tools/attack.py replay` |
 | Leurres empoisonnés (anneau uniforme) | détection ML, déception active | `tools/attack.py poison` |
 | Rafale automatisée | détectée par la cadence | `tools/attack.py burst` |
