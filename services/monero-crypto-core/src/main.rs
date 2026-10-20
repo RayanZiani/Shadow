@@ -304,17 +304,28 @@ struct MintResponse {
     amounts_visible: bool,
 }
 
+/// Valide le montant demandé pour une émission d'outputs.
+///
+/// `None` = montant varié (registre de démonstration). `Some(amount)` = paiement
+/// d'une commande : le montant est imposé, donc borné strictement. Zéro est
+/// refusé : un engagement de Pedersen à 0 n'est pas un paiement.
+fn validate_mint_amount(requested: Option<u64>) -> Result<Option<u64>, BadRequest> {
+    match requested {
+        None => Ok(None),
+        Some(0) => Err(BadRequest("amount nul : un paiement doit être > 0".into())),
+        Some(amount) if amount > MAX_AMOUNT => Err(BadRequest(
+            "amount hors bornes (1..MAX_AMOUNT)".into(),
+        )),
+        Some(amount) => Ok(Some(amount)),
+    }
+}
+
 async fn mint_outputs(Json(req): Json<MintRequest>) -> Result<Json<MintResponse>, BadRequest> {
     if req.count == 0 || req.count > 2000 {
         return Err(BadRequest("count hors bornes (1..2000)".into()));
     }
-    if let Some(amount) = req.amount {
-        // Un paiement de commande impose le montant exact : bornes strictes,
-        // et refus de 0 (un engagement de Pedersen à 0 n'est pas un paiement).
-        if amount == 0 || amount > MAX_AMOUNT {
-            return Err(BadRequest("amount hors bornes (1..MAX_AMOUNT)".into()));
-        }
-    }
+    // Un paiement de commande impose le montant exact : bornes strictes.
+    let requested_amount = validate_mint_amount(req.amount)?;
     let b_point = point_from_hex(&req.public_spend_key_hex)?;
     let a_point = point_from_hex(&req.public_view_key_hex)?;
 
@@ -328,7 +339,7 @@ async fn mint_outputs(Json(req): Json<MintRequest>) -> Result<Json<MintResponse>
         // Montants variés par défaut : un registre où tous les montants valent 1
         // rendrait la démonstration d'audit view-only inintéressante. Un
         // paiement de commande, lui, impose son montant.
-        let amount = req.amount.unwrap_or_else(|| {
+        let amount = requested_amount.unwrap_or_else(|| {
             1 + (u64::from_le_bytes(
                 hash_to_scalar(&[r_point.compress().as_bytes()]).to_bytes()[..8]
                     .try_into()
@@ -808,8 +819,21 @@ mod tests {
     }
 
     #[test]
-    fn chiffrement_du_montant_est_reversible_et_masque() {
-        let a = Scalar::random(&mut OsRng);
+    fn le_montant_impose_est_borne_et_le_zero_refuse() {
+        // Paiement d'une commande : le montant est imposé par le serveur.
+        assert_eq!(validate_mint_amount(Some(12900)).unwrap(), Some(12900));
+        // Registre de démonstration : montant varié, aucun montant imposé.
+        assert_eq!(validate_mint_amount(None).unwrap(), None);
+        // Zéro n'est pas un paiement (et un engagement à 0 n'a pas de sens).
+        assert!(validate_mint_amount(Some(0)).is_err());
+        // Au-delà de la borne, refus : un montant absurde ferait déborder
+        // l'engagement de Pedersen.
+        assert!(validate_mint_amount(Some(MAX_AMOUNT + 1)).is_err());
+        assert!(validate_mint_amount(Some(MAX_AMOUNT)).is_ok());
+    }
+
+    #[test]
+    fn chiffrement_du_montant_est_reversible_et_masque() {        let a = Scalar::random(&mut OsRng);
         let r = Scalar::random(&mut OsRng);
         let shared = a * (r * G);
         let encrypted = encrypt_amount(&shared, 1234);
