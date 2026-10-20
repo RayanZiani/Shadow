@@ -40,6 +40,8 @@ run "remediation-engine (bus d'états)" \
   bash -c "cd '$ROOT/services/remediation-engine' && '$PY' -m pytest test_state_bus.py -q"
 run "remediation-engine (flux d'incident)" \
   bash -c "cd '$ROOT/services/remediation-engine' && '$PY' test_incident_flow.py"
+run "remediation-engine (ingestion SIEM)" \
+  bash -c "cd '$ROOT/services/remediation-engine' && '$PY' -m pytest test_alert_ingest.py -q"
 run "ml-detector (features & anti-rebond)" \
   bash -c "cd '$ROOT/services/ml-detector' && '$PY' -m pytest test_detector.py -q"
 run "payment-api (modèle de menace)" \
@@ -50,6 +52,10 @@ run "auth-service (gestion de la clé JWT)" \
   bash -c "cd '$ROOT/services/auth-service' && '$PY' -m pytest test_auth_service.py -q"
 run "backoffice (authentification visage + habilitations)" \
   bash -c "cd '$ROOT/services/backoffice' && '$PY' -m pytest test_backoffice.py -q"
+run "shop-api (boutique, panier, paiement, historique)" \
+  bash -c "cd '$ROOT/services/shop-api' && '$PY' -m pytest test_shop_api.py -q"
+run "rag-assistant (indexation et sources)" \
+  bash -c "cd '$ROOT/services/rag-assistant' && '$PY' -m pytest test_rag.py -q"
 run "waf (déception active)" \
   bash -c "cd '$ROOT/services/waf' && '$PY' -m pytest test_waf.py -q"
 run "hardware (contrat série)" \

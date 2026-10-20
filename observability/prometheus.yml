@@ -14,6 +14,14 @@ global:
 rule_files:
   - /etc/prometheus/alert.rules.yml
 
+# Les règles sont ÉVALUÉES par Prometheus mais POUSSÉES par Alertmanager vers
+# remediation-engine (`POST /alert`). Sans ce bloc, les alertes s'affichent et
+# personne n'agit — exactement la panne silencieuse que le projet combat.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   - job_name: prometheus
     static_configs:
@@ -61,3 +69,15 @@ scrape_configs:
     static_configs:
       - targets: ["backoffice:8086"]
         labels: { service: backoffice, pilier: CYBER }
+
+  # --- Boutique (site vitrine + back) ------------------------------------
+  - job_name: shop-api
+    static_configs:
+      - targets: ["shop-api:8087"]
+        labels: { service: shop-api, pilier: DEV }
+
+  # --- Assistant RAG -----------------------------------------------------
+  - job_name: rag-assistant
+    static_configs:
+      - targets: ["rag-assistant:8091"]
+        labels: { service: rag-assistant, pilier: "IA/DATA" }

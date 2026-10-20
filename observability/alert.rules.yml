@@ -185,6 +185,55 @@ groups:
 
   - name: integrite
     rules:
+      # Sans jeton de service, les endpoints d'administration sont FERMÉS
+      # (503) : le playbook ne peut plus durcir ni mettre en quarantaine.
+      # Fail-closed, donc bruyant — c'est voulu.
+      - alert: JetonServiceNonConfigure
+        expr: shadow_service_token_configured == 0
+        for: 1m
+        labels: { severity: critical, pilier: CYBER }
+        annotations:
+          summary: "SERVICE_TOKEN absent : administration et remédiation fermées"
+          description: >-
+            `python tools/init_env.py` puis `docker compose up -d`. Sans jeton,
+            /admin/* et /incident répondent 503 : aucune remédiation autonome.
+
+      # La boutique est le point d'entrée « client » du SI. Si elle tombe, il
+      # n'y a plus de site vitrine ni de paiement.
+      - alert: BoutiqueIndisponible
+        expr: up{job="shop-api"} == 0
+        for: 30s
+        labels: { severity: critical, pilier: DEV }
+        annotations:
+          summary: "shop-api est arrêté"
+          description: >-
+            `docker compose up -d shop-api`. La base PostgreSQL est peut-être
+            en cause : vérifier `docker compose ps db-postgres`.
+
+      # Des paiements sont refusés : le registre cryptographique ou le noyau
+      # est en cause. Les commandes échouées sont en base, avec leur motif.
+      - alert: PaiementsBoutiqueEnEchec
+        expr: increase(shop_payments_failed_total[10m]) > 0
+        for: 1m
+        labels: { severity: warning, pilier: DEV }
+        annotations:
+          summary: "{{ $value }} paiement(s) refusé(s) sur la boutique"
+          description: >-
+            Voir `GET localhost:8087/admin/orders` (statut `failed`) et
+            `curl localhost:8080/healthz` → `crypto_core`.
+
+      # L'assistant RAG ne répond plus : le pilier IA/DATA perd son accès au
+      # dossier. Non bloquant pour le paiement, mais visible en démo.
+      - alert: AssistantRagIndisponible
+        expr: up{job="rag-assistant"} == 0
+        for: 1m
+        labels: { severity: warning, pilier: "IA/DATA" }
+        annotations:
+          summary: "rag-assistant est arrêté"
+          description: >-
+            `docker compose up -d rag-assistant`. L'index est dans l'image :
+            un redémarrage suffit, aucun téléchargement n'est nécessaire.
+
       # Un service qui redémarre en boucle : c'est ainsi qu'un panic du noyau
       # Rust se manifestait (hex trop court). Le conteneur « Up » mentait.
       - alert: RedemarragesRepetes

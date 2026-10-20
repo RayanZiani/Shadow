@@ -21,6 +21,7 @@ volumes:
   prometheus-data:
   grafana-data:
   bo-data:
+  alertmanager-data:
 
 services:
   # ---------- PILIER INFRA ----------
@@ -61,6 +62,28 @@ services:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
     ports: ["9090:9090"]
+    networks: [shadow-net]
+
+
+  # Alertmanager : reçoit les alertes Prometheus et les POUSSE vers le moteur
+  # de remédiation. Le jeton de service est injecté au démarrage (jamais écrit
+  # dans le fichier versionné).
+  alertmanager:
+    image: prom/alertmanager:latest
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-}
+    volumes:
+      - alertmanager-data:/alertmanager
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml.tpl:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        sed "s|__SERVICE_TOKEN__|$${SERVICE_TOKEN}|"
+        /etc/alertmanager/alertmanager.yml.tpl > /tmp/alertmanager.yml &&
+        exec /bin/alertmanager --config.file=/tmp/alertmanager.yml
+        --storage.path=/alertmanager
+    ports: ["9093:9093"]
     networks: [shadow-net]
 
   grafana:
@@ -115,6 +138,7 @@ services:
       CRYPTO_CORE_URL: "http://monero-crypto-core:8081"
       ML_DETECTOR_URL: "http://ml-detector:8083"
       REMEDIATION_STATE_URL: "http://remediation-engine:8084/state/report"
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-}
     depends_on:
       db-postgres:
         condition: service_healthy
@@ -165,9 +189,52 @@ services:
     ports: ["8086:8086"]
     networks: [shadow-net]
 
+
+  # ---------- PILIER DEV : boutique (site vitrine + back) ----------
+  # Articles, panier, commandes, paiements et historique vivent dans PostgreSQL.
+  # Le paiement passe par payment-api /tx/pay (signature d'anneau bLSAG).
+  shop-api:
+    build: ./services/shop-api
+    environment:
+      DATABASE_URL: "postgresql://shadow:${POSTGRES_PASSWORD:-shadow_local_dev}@db-postgres:5432/shadow_settle"
+      PAYMENT_API_URL: "http://payment-api:8080"
+      BACKOFFICE_URL: "http://backoffice:8086"
+      # Accepté uniquement pour les outils et les tests ; le navigateur utilise
+      # la session back-office, jamais ce jeton.
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-}
+    depends_on:
+      db-postgres:
+        condition: service_healthy
+      payment-api:
+        condition: service_started
+      backoffice:
+        condition: service_started
+    ports: ["8087:8087"]
+    networks: [shadow-net]
+
+
+  # ---------- PILIER IA / DATA : assistant RAG local ----------
+  # Répond sur le dossier technique (docs/ + README) avec ses sources.
+  # L'index est construit à la construction de l'image : aucun téléchargement
+  # au démarrage. Ollama tourne sur le PC IA ; s'il est absent, le service
+  # répond en extractif et le DIT dans /healthz.
+  rag-assistant:
+    build:
+      context: .
+      dockerfile: services/rag-assistant/Dockerfile
+    environment:
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports: ["8091:8091"]
+    networks: [shadow-net]
+
   # ---------- PILIER CYBER ----------
   shadow-api:
     build: ./services/shadow-api
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-}
     ports: ["8090:8090"]
     networks: [shadow-net]
 
@@ -180,6 +247,7 @@ services:
       WAF_UPSTREAM: "http://payment-api:8080"
       WAF_HONEYPOT: "http://shadow-api:8090"
       DECOY_AGE_THRESHOLD: ${DECOY_AGE_THRESHOLD:-8.0}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-}
     depends_on: [payment-api, shadow-api]
     ports: ["8085:8085"]
     networks: [shadow-net]
@@ -189,6 +257,7 @@ services:
     build: ./services/ml-detector
     environment:
       REMEDIATION_WEBHOOK: "http://remediation-engine:8084/incident"
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-}
     depends_on: [remediation-engine]
     ports: ["8083:8083"]
     networks: [shadow-net]
@@ -203,6 +272,7 @@ services:
     build: ./services/remediation-engine
     environment:
       ANSIBLE_PLAYBOOK: "/ansible/remediation_playbook.yml"
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-}
       # Token Vault transmis au playbook (rotation de la clé JWT). Vide =
       # tâche sautée et signalée `skipped`, jamais un faux succès.
       VAULT_TOKEN: ${VAULT_TOKEN:-}

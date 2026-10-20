@@ -1,0 +1,30 @@
+# Alertmanager — RESILIENCE-ALPHA
+#
+# Rôle : recevoir les alertes évaluées par Prometheus et les POUSSER vers le
+# moteur de remédiation. C'est le maillon qui transforme « une alerte est
+# levée » en « le SI agit ». Sans lui, Prometheus affiche du rouge dans une
+# interface que personne ne regarde pendant la démonstration.
+#
+# Le jeton de service n'est pas écrit ici : le conteneur remplace
+# `__SERVICE_TOKEN__` au démarrage (voir `entrypoint` dans docker-compose.yml).
+# Un jeton en clair dans un fichier versionné serait un secret dans le ZIP.
+
+route:
+  receiver: remediation-engine
+  # Regrouper par nom d'alerte : trois instances du même service en panne ne
+  # doivent pas produire trois playbooks.
+  group_by: [alertname]
+  group_wait: 5s
+  group_interval: 30s
+  # Alertmanager réémet une alerte non résolue ; le moteur a son propre
+  # anti-rebond de 60 s, mais espacer les renvois évite du bruit inutile.
+  repeat_interval: 4h
+
+receivers:
+  - name: remediation-engine
+    webhook_configs:
+      - url: http://remediation-engine:8084/alert
+        send_resolved: false
+        http_config:
+          headers:
+            X-Service-Token: "__SERVICE_TOKEN__"
