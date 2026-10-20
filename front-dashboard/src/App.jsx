@@ -5,6 +5,8 @@ import AdminPanel from "./auth/AdminPanel.jsx";
 import LoginPage from "./auth/LoginPage.jsx";
 import { api } from "./auth/api.js";
 import { clearSession, readToken } from "./auth/session.js";
+import AdminShop from "./shop/AdminShop.jsx";
+import Storefront from "./shop/Storefront.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
 const REMEDIATION_BASE = import.meta.env.VITE_REMEDIATION_BASE || "http://localhost:8084";
@@ -363,20 +365,26 @@ function Supervision({ user, onLogout, onOpenAdmin }) {
 }
 
 /**
- * Racine de l'application — deux écrans, une seule porte.
+ * Racine de l'application — la vitrine est publique, le back-office ne l'est pas.
  *
- * Rien du tableau de supervision n'est rendu avant l'authentification : le
- * back-office est protégé à l'écran, et les appels aux services (8080, 8083,
- * 8084) ne partent qu'une fois la session ouverte. Ce n'est pas une frontière
- * de sécurité — les services de démonstration restent joignables — mais cela
- * évite qu'un écran de supervision s'affiche devant quelqu'un qui n'a pas
- * franchi la reconnaissance faciale.
+ * Deux consignes cohabitent :
+ *
+ * * la **boutique** est un site vitrine : un visiteur consulte le catalogue,
+ *   remplit un panier et paie sans compte. C'est l'écran par défaut.
+ * * le **back-office** (supervision, habilitations, administration de la
+ *   boutique) exige l'authentification à deux facteurs : identifiant, visage,
+ *   mot de passe.
+ *
+ * Les appels de supervision (8080, 8083, 8084) ne partent qu'une fois la
+ * session ouverte. Ce n'est pas une frontière de sécurité — les services de
+ * démonstration restent joignables — mais cela évite qu'un écran de supervision
+ * s'affiche devant quelqu'un qui n'a pas franchi la reconnaissance faciale.
  */
 export default function App() {
   const [user, setUser] = useState(null);
   const [health, setHealth] = useState(null);
   const [healthError, setHealthError] = useState(null);
-  const [view, setView] = useState("supervision");
+  const [view, setView] = useState("shop");
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
@@ -426,7 +434,7 @@ export default function App() {
     }
     clearSession();
     setUser(null);
-    setView("supervision");
+    setView("shop");
   };
 
   if (checking) {
@@ -437,7 +445,8 @@ export default function App() {
     );
   }
 
-  if (!user) {
+  // Le back-office exige une session : sans elle, on retombe sur la connexion.
+  if (view === "login" || ((view === "supervision" || view === "admin") && !user)) {
     return (
       <div className="relative">
         {healthError && (
@@ -445,20 +454,64 @@ export default function App() {
             back-office injoignable ({healthError}) — démarrez le service sur le PC hôte
           </div>
         )}
-        <LoginPage health={health} onAuthenticated={setUser} />
+        <LoginPage
+          health={health}
+          onAuthenticated={(authenticated) => {
+            setUser(authenticated);
+            setView("supervision");
+          }}
+        />
+        <button
+          onClick={() => setView("shop")}
+          className="fixed bottom-4 left-4 bg-white text-ink text-xs font-bold rounded-lg px-3 py-2 border border-rule"
+        >
+          ← Retour à la boutique
+        </button>
       </div>
     );
   }
 
-  if (view === "admin") {
-    return <AdminPanel currentUser={user} onLogout={logout} />;
+  if (view === "admin" && user) {
+    return (
+      <AdminPanel
+        currentUser={user}
+        onLogout={logout}
+        onOpenShop={() => setView("shop-admin")}
+      />
+    );
+  }
+
+  if (view === "shop-admin" && user) {
+    return (
+      <div className="relative">
+        <AdminShop />
+        <button
+          onClick={() => setView("admin")}
+          className="fixed bottom-4 left-4 bg-ink text-white text-xs font-bold rounded-lg px-3 py-2"
+        >
+          ← Habilitations
+        </button>
+      </div>
+    );
+  }
+
+  if (view === "supervision" && user) {
+    return (
+      <Supervision
+        user={user}
+        onLogout={logout}
+        onOpenAdmin={user.role === "admin" ? () => setView("admin") : undefined}
+      />
+    );
   }
 
   return (
-    <Supervision
+    <Storefront
       user={user}
+      onLogin={() => setView("login")}
+      onSupervision={() => setView("supervision")}
+      onAdmin={() => setView("admin")}
       onLogout={logout}
-      onOpenAdmin={user.role === "admin" ? () => setView("admin") : undefined}
     />
   );
 }

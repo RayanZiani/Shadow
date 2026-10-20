@@ -285,6 +285,9 @@ struct MintRequest {
     count: usize,
     public_spend_key_hex: String,
     public_view_key_hex: String,
+    /// Montant imposé (paiement d'une commande). Absent = montant varié
+    /// aléatoirement, ce qui garde un registre réaliste pour la démo d'audit.
+    amount: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -305,6 +308,13 @@ async fn mint_outputs(Json(req): Json<MintRequest>) -> Result<Json<MintResponse>
     if req.count == 0 || req.count > 2000 {
         return Err(BadRequest("count hors bornes (1..2000)".into()));
     }
+    if let Some(amount) = req.amount {
+        // Un paiement de commande impose le montant exact : bornes strictes,
+        // et refus de 0 (un engagement de Pedersen à 0 n'est pas un paiement).
+        if amount == 0 || amount > MAX_AMOUNT {
+            return Err(BadRequest("amount hors bornes (1..MAX_AMOUNT)".into()));
+        }
+    }
     let b_point = point_from_hex(&req.public_spend_key_hex)?;
     let a_point = point_from_hex(&req.public_view_key_hex)?;
 
@@ -315,9 +325,16 @@ async fn mint_outputs(Json(req): Json<MintRequest>) -> Result<Json<MintResponse>
         let shared = r_scalar * a_point;
         let hs = hash_to_scalar(&[shared.compress().as_bytes()]);
         let stealth = hs * G + b_point;
-        // Montants variés : un registre où tous les montants valent 1 rendrait
-        // la démonstration d'audit view-only inintéressante.
-        let amount = 1 + (u64::from_le_bytes(hash_to_scalar(&[r_point.compress().as_bytes()]).to_bytes()[..8].try_into().unwrap()) % 500);
+        // Montants variés par défaut : un registre où tous les montants valent 1
+        // rendrait la démonstration d'audit view-only inintéressante. Un
+        // paiement de commande, lui, impose son montant.
+        let amount = req.amount.unwrap_or_else(|| {
+            1 + (u64::from_le_bytes(
+                hash_to_scalar(&[r_point.compress().as_bytes()]).to_bytes()[..8]
+                    .try_into()
+                    .unwrap(),
+            ) % 500)
+        });
         outputs.push(MintedOutput {
             one_time_public_key_hex: point_hex(&stealth),
             tx_public_key_hex: point_hex(&r_point),

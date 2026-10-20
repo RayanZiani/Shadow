@@ -110,7 +110,7 @@ function FaceEnrollment({ target, onDone, onCancel }) {
   );
 }
 
-export default function AdminPanel({ currentUser, onLogout }) {
+export default function AdminPanel({ currentUser, onLogout, onOpenShop }) {
   const [users, setUsers] = useState([]);
   const [audit, setAudit] = useState([]);
   const [sessions, setSessions] = useState([]);
@@ -193,6 +193,14 @@ export default function AdminPanel({ currentUser, onLogout }) {
           </p>
         </div>
         <div className="flex gap-2">
+          {onOpenShop && (
+            <button
+              onClick={onOpenShop}
+              className="bg-white text-ink font-bold text-sm rounded-lg px-3 py-2 border border-rule"
+            >
+              Boutique
+            </button>
+          )}
           <button
             onClick={refresh}
             className="bg-white text-ink font-bold text-sm rounded-lg px-3 py-2 border border-rule"
