@@ -27,7 +27,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from rag import Retriever, extractive_answer, load_index, ollama_config, ollama_generate
+from rag import (
+    Retriever,
+    extractive_answer,
+    load_index,
+    ollama_config,
+    ollama_generate,
+    ollama_health,
+)
 
 INDEX_PATH = os.environ.get("RAG_INDEX", str(Path(__file__).parent / "index.json"))
 TOP_K = int(os.environ.get("RAG_TOP_K", "4"))
@@ -55,16 +62,16 @@ class AskRequest(BaseModel):
     top_k: int = Field(default=TOP_K, ge=1, le=10)
 
 
-def _ollama_status() -> str:
-    """Test rapide : Ollama répond-il ? On ne bloque pas le démarrage dessus."""
-    import httpx
+def _ollama_status() -> dict:
+    """État d'Ollama pour `/healthz` — SANS appel réseau bloquant.
 
-    cfg = ollama_config()
-    try:
-        response = httpx.get(f"{cfg['url'].rstrip('/')}/api/tags", timeout=1.5)
-        return "ready" if response.status_code == 200 else f"http_{response.status_code}"
-    except Exception:  # noqa: BLE001
-        return "unreachable"
+    La version précédente interrogeait Ollama à chaque `/healthz` avec un
+    timeout de 1,5 s : quand Ollama est injoignable, la sonde de santé du
+    service mettait 1,5 s à répondre. Prometheus scrape toutes les 10 s et
+    Docker vérifie le conteneur toutes les 10 s : c'était une fausse lenteur
+    permanente. On lit désormais le disjoncteur, qui est instantané.
+    """
+    return ollama_health(ollama_config())
 
 
 @app.get("/healthz")

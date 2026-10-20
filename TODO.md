@@ -332,33 +332,50 @@ Reste à vérifier sur la pile démarrée :
   **Acceptation** : `PaiementRefuse` apparaît dans Alertmanager (9093) et
   `POST /alert` du moteur renvoie `acted: 1`.
 
-### 2.3 Test de charge — S
+### 2.3 Test de charge — fait
 
-Aucune mesure de tenue en charge. La rafale (`attack.py burst`) fait 9,7 tx/s,
-ce qui n'est pas une mesure de saturation.
+`tools/load_test.py` : 1/5/10/20 clients concurrents, débit, p50/p95/p99,
+taux d'erreur, point de rupture, rapport Markdown dans
+`docs/mesures-charge.md`. Trois cibles : `payment`, `shop`, `rag`.
 
-**Où** : `tools/load_test.py` (à créer), avec `httpx` + `asyncio`.
+**Résultats** : paiement 630 req/s sans rupture ; RAG 336 req/s ; **boutique =
+point de rupture** (~130 ms par achat complet, > 1 s à 5 clients simultanés,
+à cause de la signature d'anneau — 0 % d'erreurs).
 
-**Acceptation** : courbe débit/latence pour 1, 5, 10, 20 clients concurrents,
-publiée dans le dossier technique. Identifier le point de rupture.
+**Ce que la mesure a corrigé** : `/ask` et `/healthz` du RAG attendaient le
+timeout d'Ollama (0,5 req/s, p95 2 318 ms). Disjoncteur + sonde sans appel
+réseau : **×670 de débit**. Détail dans `docs/mesures-charge.md`.
 
-### 2.4 Chaos engineering formalisé — M
+Reste : refaire la mesure sur le PC hôte, avec PostgreSQL et Docker.
 
-Le sujet mentionne « Chaos engineering : injection de défaillances et recette ».
-Aujourd'hui les pannes sont testées **à la main** (couper un service, débrancher
-l'ESP32). Rien n'est automatisé.
+### 2.4 Chaos engineering — fait
 
-**Où** : `tools/chaos.py` (à créer).
+`tools/chaos.py` : 6 scénarios, chacun avec un **invariant métier** (pas
+seulement un code HTTP), un statut et un code de sortie. Le script redémarre
+systématiquement ce qu'il a arrêté, même en cas d'exception.
 
-Scénarios à couvrir :
-- arrêt de `ml-detector` → le paiement doit continuer ;
-- arrêt de `remediation-engine` → le dashboard doit afficher SSE KO, sans crash ;
-- arrêt de `monero-crypto-core` → 503 explicite, pas de 500 ;
-- coupure du pont hardware → la remédiation continue ;
-- redémarrage de `payment-api` → registre conservé (dépend de 1.3).
+| Scénario | Invariant vérifié |
+|---|---|
+| `ml` | arrêter le détecteur ne casse pas le paiement (le ML observe) |
+| `remediation` | le paiement continue, `/state` injoignable comme attendu |
+| `crypto` | 503/502 explicite, `crypto_core: degraded` — jamais un 500 nu |
+| `shop` | `payment-api` reste sain sans la boutique (silos) |
+| `token` | sans jeton, 503 fail-closed (vérifié en réel) |
+| `rag` | arrêter l'assistant ne touche ni boutique ni paiement |
 
-**Acceptation** : chaque scénario produit un code de sortie et une ligne de
-rapport ; intégré à `tools/run_tests.sh` derrière un flag `--chaos`.
+**Vérifié en réel** : `token` → 503 sur les trois routes d'administration.
+**Non testés ici** : `ml`, `remediation`, `crypto`, `shop`, `rag` exigent
+`docker compose` (absent de ce poste) ; le script les déclare explicitement
+`NON TESTÉS` au lieu de faire semblant.
+
+Reste à lancer sur le PC hôte :
+
+```bash
+python tools/chaos.py              # les 6 scénarios
+python tools/chaos.py --only ml    # un seul
+```
+
+**Acceptation** : 6/6 `PASS` sur la pile Docker.
 
 ### 2.5 Le quadrant « console Ansible » du dashboard est pauvre — S
 

@@ -141,9 +141,50 @@ def test_healthz_declare_le_mode_de_generation(client):
     assert health["retrieval"] == "bm25"
     assert health["index"]["chunks"] > 100
     assert health["generation"]["model"] == "llama3.1:8b"
-    assert health["generation"]["ollama"] in {"unreachable", "ready"} or health[
-        "generation"
-    ]["ollama"].startswith("http_")
+    # `ollama` est un objet : état + raison + délai avant nouvelle tentative.
+    ollama = health["generation"]["ollama"]
+    assert ollama["state"] in {"unknown", "unreachable", "ready"}
+    assert "retry_in_seconds" in ollama
+
+
+def test_healthz_ne_bloque_pas_quand_ollama_est_muet(client):
+    """Le point qui compte : la sonde de santé doit répondre en quelques ms.
+
+    Prometheus scrape toutes les 10 s et Docker vérifie le conteneur toutes les
+    10 s. Une sonde qui attend 1,5 s à chaque appel est une fausse lenteur
+    permanente — mesurée en recette quand Ollama était injoignable.
+    """
+    import time
+
+    started = time.perf_counter()
+    for _ in range(5):
+        assert client.get("/healthz").status_code == 200
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    assert elapsed_ms < 500, f"{elapsed_ms:.0f} ms pour 5 appels : la sonde bloque"
+
+
+def test_le_disjoncteur_evite_de_reattendre_le_timeout(client, monkeypatch):
+    """Après un échec, `/ask` ne retente pas pendant 30 s.
+
+    Sans disjoncteur, chaque question payait le timeout de connexion : 2 s
+    mesurées quand Ollama est injoignable, jusqu'à 45 s avec un hôte qui
+    absorbe les connexions. Le dashboard aurait gelé.
+    """
+    import time
+
+    import rag
+
+    rag._breaker["down_until"] = time.time() + 30
+    started = time.perf_counter()
+    response = client.post("/ask", json={"q": "combien de temps prend la reprise ?"})
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    assert response.status_code == 200
+    assert response.json()["engine"] == "extractive"
+    assert elapsed_ms < 300, f"{elapsed_ms:.0f} ms : le disjoncteur n'a pas joué"
+
+    rag._breaker["down_until"] = 0.0  # remise en état pour les autres tests
+    rag._breaker["last_error"] = None
 
 
 def test_la_reponse_donne_la_duree_et_cite_le_rapport(retriever):

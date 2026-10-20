@@ -24,6 +24,7 @@ import json
 import math
 import os
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -349,9 +350,42 @@ def extractive_answer(question: str, results: list[dict]) -> str:
     return " ".join(f"{sentence} [{source}]" for sentence, source in picked)
 
 
+# Ollama est un service EXTERNE à la pile (PC IA). Il peut être éteint, lent,
+# ou derrière un réseau qui absorbe les connexions. Sans garde-fou, chaque
+# `/ask` attendait son timeout : mesuré à 2 s de blocage quand Ollama est
+# injoignable, et 45 s avec un hôte qui ne répond pas. Un assistant qui gèle
+# le dashboard pendant 45 s est une panne, pas une fonctionnalité.
+#
+# Trois protections :
+#   1. délais séparés : connexion courte (2 s), lecture longue (le modèle
+#      rédige, c'est normal) ;
+#   2. disjoncteur : après un échec, on n'essaie plus pendant 30 s ;
+#   3. le mode extractif répond immédiatement.
+OLLAMA_CONNECT_TIMEOUT = 2.0
+OLLAMA_BREAKER_SECONDS = 30.0
+_breaker = {"down_until": 0.0, "last_error": None}
+
+
+def ollama_available(cfg: dict) -> bool:
+    """État du disjoncteur. Ne fait AUCUN appel réseau : instantané."""
+    return time.time() >= _breaker["down_until"]
+
+
+def _trip_breaker(error: str) -> None:
+    _breaker["down_until"] = time.time() + OLLAMA_BREAKER_SECONDS
+    _breaker["last_error"] = error
+
+
 def ollama_generate(question: str, results: list[dict], cfg: dict) -> str | None:
-    """Génère une réponse avec Ollama. Retourne None si Ollama est muet."""
+    """Génère une réponse avec Ollama. Retourne None si Ollama est muet.
+
+    Ne lève jamais : le mode extractif prend le relais, et `/healthz` dit
+    pourquoi.
+    """
     import httpx
+
+    if not ollama_available(cfg):
+        return None
 
     context = "\n\n".join(
         f"[{result['source']} §{result['heading']}]\n{result['text']}" for result in results
@@ -373,12 +407,14 @@ def ollama_generate(question: str, results: list[dict], cfg: dict) -> str | None
                 "stream": False,
                 "options": {"temperature": 0.1, "num_predict": 220},
             },
-            timeout=cfg["timeout"],
+            timeout=httpx.Timeout(cfg["timeout"], connect=OLLAMA_CONNECT_TIMEOUT),
         )
         response.raise_for_status()
         answer = (response.json().get("response") or "").strip()
+        _breaker["last_error"] = None
         return answer or None
-    except Exception:  # noqa: BLE001 - le mode dégradé est explicite dans la réponse
+    except Exception as exc:  # noqa: BLE001 - le mode dégradé est explicite
+        _trip_breaker(f"{type(exc).__name__}")
         return None
 
 
@@ -388,3 +424,15 @@ def ollama_config() -> dict:
         "model": os.environ.get("OLLAMA_MODEL", "llama3.1:8b"),
         "timeout": float(os.environ.get("OLLAMA_TIMEOUT", "45")),
     }
+
+
+def ollama_health(cfg: dict) -> dict:
+    """État pour `/healthz`, sans bloquer : lit le disjoncteur, pas le réseau."""
+    if not ollama_available(cfg):
+        remaining = round(_breaker["down_until"] - time.time(), 1)
+        return {
+            "state": "unreachable",
+            "last_error": _breaker["last_error"],
+            "retry_in_seconds": max(0.0, remaining),
+        }
+    return {"state": "unknown", "last_error": _breaker["last_error"]}

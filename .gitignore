@@ -47,6 +47,13 @@ services/backoffice/data/
 services/backoffice/*.db
 services/backoffice/*.db-wal
 services/backoffice/*.db-shm
+
+# Boutique : PostgreSQL en pile complète, SQLite pour les tests et le poste
+# local. Aucune base ne doit entrer dans le dépôt (données clients + état).
+services/shop-api/data/
+services/shop-api/*.db
+services/shop-api/*.db-wal
+services/shop-api/*.db-shm
 # Les modèles faciaux (38 Mo) sont téléchargés et vérifiés à la construction de
 # l'image : voir services/backoffice/Dockerfile.
 services/backoffice/models/*.onnx
