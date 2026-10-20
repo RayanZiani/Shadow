@@ -232,3 +232,109 @@ def test_le_pin_par_defaut_ne_fonctionne_plus(client):
         pytest.skip("TERMINAL_PIN vaut explicitement 1234 dans cet environnement")
     assert client.post("/pin/verify", json={"pin": "1234"}).status_code == 401
     assert client.post("/pin/verify", json={"pin": main.PIN_CODE}).status_code == 200
+
+
+def test_une_double_depense_concurrente_est_refusee(monkeypatch):
+    """F8 : deux `/tx/submit` simultanés avec la même key image.
+
+    Avant le correctif, les deux requêtes passaient le test
+    `key_image in spent_key_images` (la clé n'était pas encore ajoutée),
+    attendaient chacune les appels au noyau, puis répondaient toutes les deux
+    `200 confirmed`. L'anti-double-dépense était contournable par deux `curl`
+    en parallèle.
+
+    Le test rend le noyau LENT (50 ms) pour ouvrir la fenêtre de course : sans
+    le correctif, les deux requêtes se glisseraient dedans.
+    """
+    import asyncio
+
+    import httpx
+
+    _register(50)
+    ids = list(main.OUTPUTS)
+    real_id = ids[0]
+    decoys = ids[1:11]
+
+    def _shaped(key: str):
+        """Valeur plausible selon le nom du champ du contrat crypto."""
+        if key == "parts":
+            return [{"commitment_hex": "cd" * 32}, {"commitment_hex": "ce" * 32}]
+        if key in ("valid", "balanced", "decrypted"):
+            return True
+        if key in ("amount", "decrypted_amount"):
+            return 1
+        if key == "verify_cpu_microseconds":
+            return 10
+        if key.endswith("_hex"):
+            return "ab" * 32
+        return 1
+
+    class CryptoResponse(dict):
+        """Répond à toute clé du contrat, pour ne pas casser à chaque ajout."""
+
+        def __missing__(self, key):
+            value = _shaped(key)
+            self[key] = value
+            return value
+
+    async def fake_crypto(path, payload):
+        await asyncio.sleep(0.05)  # ouvre la fenêtre de concurrence
+        response = CryptoResponse()
+        if path == "/crypto/derive-one-time-key":
+            # La clé dérivée doit correspondre à celle annoncée par le
+            # registre, sinon `/tx/submit` refuse en 409 avant la partie
+            # qu'on veut tester.
+            response["one_time_public_key_hex"] = main.OUTPUTS[real_id][
+                "one_time_public_key_hex"
+            ]
+        return response
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(main, "_crypto", fake_crypto)
+    monkeypatch.setattr(main, "_send_telemetry", noop)
+    monkeypatch.setattr(main, "_report_success_tx", noop)
+    monkeypatch.setenv("SERVICE_TOKEN", "jeton-de-test")
+    main._pending_key_images.clear()
+    main.spent_key_images.clear()
+    main.spent_output_ids.clear()
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", timeout=30.0
+        ) as client:
+            payload = {"real_output_id": real_id, "decoy_ids": decoys}
+            first, second = await asyncio.gather(
+                client.post("/tx/submit", json=payload),
+                client.post("/tx/submit", json=payload),
+            )
+            return sorted([first.status_code, second.status_code])
+
+    codes = asyncio.run(scenario())
+
+    # Exactement une acceptation et un refus : jamais deux 200.
+    assert codes == [200, 409], codes
+    # Et l'état final est cohérent : la key image est dépensée une seule fois.
+    assert "ab" * 32 in main.spent_key_images
+    assert real_id in main.spent_output_ids
+    assert not main._pending_key_images, main._pending_key_images
+
+
+def test_le_pin_non_ascii_est_compte_comme_un_echec(client):
+    """F11 : `{"pin": "é"}` provoquait un 500 SANS compter l'échec.
+
+    `hmac.compare_digest` sur des `str` lève TypeError dès qu'un caractère est
+    non-ASCII. Le PIN n'était donc pas contourné, mais le compteur d'échecs et
+    le verrouillage ne voyaient rien : un angle mort.
+    """
+    main._pin_state.update(failures=0, locked_until=0.0)
+
+    response = client.post("/pin/verify", json={"pin": "é"})
+    assert response.status_code == 401, response.status_code
+    assert main._pin_state["failures"] == 1, main._pin_state
+
+    # Et un PIN correct reste accepté : on n'a pas cassé la fonctionnalité.
+    assert client.post("/pin/verify", json={"pin": main.PIN_CODE}).status_code == 200
+    main._pin_state.update(failures=0, locked_until=0.0)

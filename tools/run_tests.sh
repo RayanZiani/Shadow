@@ -40,6 +40,8 @@ run "remediation-engine (bus d'états)" \
   bash -c "cd '$ROOT/services/remediation-engine' && '$PY' -m pytest test_state_bus.py -q"
 run "remediation-engine (flux d'incident)" \
   bash -c "cd '$ROOT/services/remediation-engine' && '$PY' test_incident_flow.py"
+run "remediation-engine (etat terminal garanti)" \
+  bash -c "cd '$ROOT/services/remediation-engine' && '$PY' -m pytest test_incident_flow.py -q"
 run "remediation-engine (ingestion SIEM)" \
   bash -c "cd '$ROOT/services/remediation-engine' && '$PY' -m pytest test_alert_ingest.py -q"
 run "ml-detector (features & anti-rebond)" \
@@ -56,6 +58,8 @@ run "backoffice (authentification visage + habilitations)" \
   bash -c "cd '$ROOT/services/backoffice' && '$PY' -m pytest test_backoffice.py -q"
 run "shop-api (boutique, panier, paiement, historique)" \
   bash -c "cd '$ROOT/services/shop-api' && '$PY' -m pytest test_shop_api.py -q"
+run "shop-api (dialecte PostgreSQL)" \
+  bash -c "cd '$ROOT/services/shop-api' && '$PY' -m pytest test_postgres_dialect.py -q"
 run "rag-assistant (indexation et sources)" \
   bash -c "cd '$ROOT/services/rag-assistant' && '$PY' -m pytest test_rag.py -q"
 run "waf (déception active)" \

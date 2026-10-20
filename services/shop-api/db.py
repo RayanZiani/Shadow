@@ -37,7 +37,10 @@ CREATE TABLE IF NOT EXISTS carts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     token       TEXT NOT NULL UNIQUE,
     created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    updated_at  REAL NOT NULL,
+    -- Réclamation atomique : empêche deux `checkout` simultanés sur le même
+    -- panier de créer deux commandes (double-clic sur « Payer »).
+    checked_out_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS cart_items (
@@ -110,7 +113,10 @@ CREATE TABLE IF NOT EXISTS carts (
     id          BIGSERIAL PRIMARY KEY,
     token       TEXT NOT NULL UNIQUE,
     created_at  DOUBLE PRECISION NOT NULL,
-    updated_at  DOUBLE PRECISION NOT NULL
+    updated_at  DOUBLE PRECISION NOT NULL,
+    -- Réclamation atomique : empêche deux `checkout` simultanés sur le même
+    -- panier de créer deux commandes (double-clic sur « Payer »).
+    checked_out_at DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS cart_items (

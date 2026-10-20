@@ -26,6 +26,12 @@ trous qu'un jury CYBER exploite en quelques minutes, avec `curl`.
 
 | F7 | **Entrées non strictes** sur la boutique | une quantité `"3"` (chaîne) ou `2.5` était convertie silencieusement ; un SKU arbitraire (`X'; DROP TABLE …`) était stocké | `strict=True` sur les entiers, motif `^[A-Z0-9][A-Z0-9-]{1,31}$` sur le SKU → 422 | `test_une_quantite_en_chaine_est_refusee`, `test_un_sku_malforme_est_refuse` |
 
+| F8 | **Double dépense par concurrence** (`/tx/submit`) | deux requêtes simultanées avec la même key image passaient toutes les deux le test, puis répondaient `200 confirmed` — la propriété centrale du projet était contournable par deux `curl` en parallèle | la key image est **réservée avant le premier `await`** (`asyncio.Lock` + `_pending_key_images`) ; un second appel reçoit 409 sans même payer le coût cryptographique | `test_une_double_depense_concurrente_est_refusee` |
+| F9 | **Double débit par double-clic** (`/checkout`) | deux `POST /checkout` sur le même panier créaient deux commandes et deux paiements ; le `WHERE stock >= ?` empêchait la survente, pas le double débit | réclamation **atomique** du panier (`UPDATE carts SET checked_out_at = ? WHERE checked_out_at IS NULL`, rowcount vérifié) ; relâchée si le paiement échoue | `test_deux_checkouts_sur_le_meme_panier` |
+| F10 | **500 + oracle d'existence** (`/orders/{ref}`) | un `customer_ref` non-ASCII levait `TypeError` dans `compare_digest` : 500 si la commande existait, 404 sinon — donc un oracle, sur des références `CMD-` + 8 hex énumérables | format validé **avant** la comparaison, puis comparaison en **octets** | `test_un_token_non_ascii_ne_fuit_pas_lexistence` |
+| F11 | **Angle mort du verrouillage du PIN** | `{"pin": "é"}` provoquait un 500 **sans** incrémenter le compteur d'échecs ni le verrouillage | comparaison en octets ; le refus est compté comme les autres | `test_le_pin_non_ascii_est_compte_comme_un_echec` |
+| F12 | **Alerte SIEM morte** | la règle Loki `PaiementRefuse` ciblait `{service="payment-api"}`, or la ligne est écrite par **shop-api** : l'alerte ne pouvait jamais se déclencher, donc aucune remédiation | sélecteur corrigé ; la règle sur le jeton cible le 503 réellement journalisé | `tools/check_compose.py` (chaîne alerte → actionnable) |
+
 **Pourquoi le fail-closed plutôt qu'un jeton par défaut** : un défaut connu est
 une faille (tout le monde le lit dans le dépôt). Un service qui refuse de servir
 tant qu'il n'est pas configuré est bruyant — et `tools/init_env.py` le configure
@@ -89,6 +95,26 @@ en une commande. L'alerte `JetonServiceNonConfigure` le signale dans Prometheus.
 
 ---
 
+## 2 bis. Bugs de correction fermés par l'audit de code
+
+Ce ne sont **pas** des failles de sécurité : ce sont des défauts qui cassent le
+service ou faussent une mesure. Ils sont listés ici parce qu'un jury demande
+« qu'est-ce qui ne marchait pas ? », et parce qu'un bug non écrit revient.
+
+| # | Bug | Effet réel | Correction | Test |
+|---|---|---|---|---|
+| C1 | **Boutique inutilisable sur PostgreSQL** | le schéma déclare `active BOOLEAN`, le SQL écrivait `active = 1`. psycopg encode `1` en `int4` ; PostgreSQL n'a aucun cast `integer → boolean`. L'exception survenait dans `_seed_catalog`, donc dans `lifespan`, **avant** le `yield` : uvicorn « Application startup failed », conteneur en boucle | `TRUE`/`FALSE` dans le SQL (les deux moteurs les comprennent) et `True`/`False` en Python | `test_postgres_dialect.py` (4 tests statiques) — **la preuve reste `docker compose up`** |
+| C3 | **Outputs restaurés non dépensables** | le portefeuille était retiré au hasard à chaque démarrage ; les outputs restaurés appartenaient aux anciennes clés, donc `/tx/submit` répondait 409 une fois sur deux — exactement le symptôme que la persistance devait supprimer | portefeuille persisté dans PostgreSQL (`wallet`), rechargé **avant** toute émission | `test_le_portefeuille_est_persiste_et_recharge` |
+| R2 | **Key image écrite en deux temps** | `UPDATE outputs SET spent` puis `INSERT key_images` séparés : si le processus mourait entre les deux, un rejeu passait au redémarrage | une transaction PostgreSQL | `test_la_depense_est_atomique` |
+| R3 | **Restauration partielle** | `_restore_registry` retournait tôt si `outputs` était vide, donc les key images n'étaient pas restaurées | chaque partie restaurée indépendamment | `test_la_restauration_conserve_les_key_images_sans_outputs` |
+| E1 | **État bloqué en `REMEDIATING`** | une `PermissionError` du playbook tuait la tâche de fond : aucun `REMEDIATION_FAILED`, dashboard orange, `/state/report` refusait `NORMAL_TX` indéfiniment | `_run_incident` en `try/except/finally` publie toujours un état terminal ; `_run_playbook` capture `OSError`/`SubprocessError` | `test_une_erreur_du_playbook_publie_un_etat_terminal` |
+| E2 | **Verrou de remédiation non atomique** | `if _lock.locked()` puis `create_task` : la tâche n'avait pas encore pris le verrou, donc deux alertes actionnables lançaient deux playbooks | drapeau `_busy` positionné **synchroniquement** avant `create_task` | `test_deux_alertes_actionnables_ne_lancent_quun_playbook` |
+| E3 | **Webhook cassé invisible** | un 401/503 du moteur n'est pas une exception `httpx` : il passait pour un succès, `last_webhook_error` restait `None`, l'alerte ne se déclenchait pas | contrôle explicite du statut | `test_detector.py` |
+| E4 | **Télémétrie jetée en silence** | idem côté `payment-api` : `/ingest` en 503 et personne ne le savait | compteurs `sent`/`dropped`/`last_error` publiés dans `/healthz` et `shadow_telemetry_dropped_total` | `test_payment_api.py` |
+| E5 | **`/healthz` et `/metrics` tombaient avec la base** | le `try` ne couvrait que la première requête : base arrêtée → 500, healthcheck Docker en boucle, scrape Prometheus en échec **pendant la panne** | tout le corps protégé, `status: degraded` et `shop_database_up 0` | `test_shop_api.py` |
+| L1 | **Lignes de tableau éliminées du RAG** | une ligne transformée en phrase n'est plus une sous-chaîne du Markdown : le rang était recalculé par sous-chaîne, échouait, et la ligne était rejetée dès `TOP_K=4` | le rang est porté par le candidat dès sa construction | `test_un_tableau_seul_repond_a_une_question_de_duree` |
+| L2 | **Disjoncteur Ollama non thread-safe** | N requêtes simultanées lisaient toutes le disjoncteur fermé avant qu'une ne le tripé : N appels bloquants, threadpool saturé, healthcheck Docker en échec | verrou + **single-flight** : un seul thread sonde, les autres répondent en extractif | `test_le_disjoncteur_ne_laisse_passer_quune_sonde` |
+
 ## 3. Ce qui reste ouvert (assumé, écrit)
 
 | # | Point | Risque | Pourquoi c'est acceptable | Quand |
@@ -96,7 +122,8 @@ en une commande. L'alerte `JetonServiceNonConfigure` le signale dans Prometheus.
 | O1 | **Pas de TLS** | un attaquant sur le réseau peut lire le trafic | la démonstration est sur `localhost` ; la caméra l'exige (`getUserMedia`) | production : TLS + HSTS |
 | O2 | **Pas de détection de vivacité** faciale | une photo imprimée passe le facteur visage | le mot de passe reste exigé ; publié dans `/healthz` | chantier dédié |
 | O3 | **Pas de Bulletproofs** | un montant négatif modulo l passe l'équilibre | nécessite un attaquant authentifié qui forge ses engagements ; publié dans `/healthz` | `TODO.md` §1.1 |
-| O4 | ~~Registre d'outputs en mémoire~~ — **fermé** | — | journal PostgreSQL (`registry.py`, 8 tests) | — |
+| O4 | ~~Registre d'outputs en mémoire~~ — **fermé** | — | journal PostgreSQL (`registry.py`, 11 tests) | — |
+| O8 | **Reconnexion du registre non automatique** | après une coupure PostgreSQL, les écritures suivantes sont perdues en silence (le service continue en mémoire) | assumé pour une démonstration ; `/healthz` publie `registry.durable: false` et l'alerte `RegistreNonPersistant` se déclenche | redémarrer `payment-api` après reprise de la base |
 | O5 | **Blocage 5 min exploitable** en déni de service ciblé | un tiers peut bloquer un compte connu | imposé par la consigne ; déblocage admin + alerte `ComptesBloques` | assumé |
 | O6 | **Pas de WAF générique** (ModSecurity/CRS) | pas de couverture OWASP top-10 générique | les entrées sont validées par Pydantic dans chaque service ; le WAF maison fait de la déception, pas du filtrage | assumé |
 | O7 | **Pas de revue d'accès périodique** | un compte oublié reste actif | journal d'audit + sessions révocables | gouvernance |

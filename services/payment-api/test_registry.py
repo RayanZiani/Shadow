@@ -64,15 +64,34 @@ class FakeCursor:
         return False
 
 
+class FakeTransaction:
+    """Context manager qui compte les transactions ouvertes (comme psycopg)."""
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __enter__(self):
+        self.connection.transactions.append("begin")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.connection.transactions.append("rollback" if exc_type else "commit")
+        return False
+
+
 class FakeConnection:
     def __init__(self, output_rows=None, key_images=None):
         self.statements: list[tuple] = []
         self.inserted: list[tuple] = []
         self.output_rows = output_rows or []
         self.key_images = key_images or []
+        self.transactions: list[str] = []
 
     def cursor(self):
         return FakeCursor(self)
+
+    def transaction(self):
+        return FakeTransaction(self)
 
 
 def _store_with(connection) -> RegistryStore:
@@ -193,6 +212,72 @@ def test_la_depense_marque_l_output_et_ajoute_la_key_image():
     assert any("INSERT INTO key_images" in query for query in sql)
     # `ON CONFLICT DO NOTHING` : rejouer une dépense ne casse rien.
     assert any("ON CONFLICT (key_image) DO NOTHING" in query for query in sql)
+
+
+def test_la_depense_est_atomique():
+    """R2 : l'output dépensé ET la key image, ensemble ou pas du tout.
+
+    Deux `execute` séparés en autocommit laissaient une fenêtre : si le
+    processus mourait entre les deux, la base marquait l'output dépensé mais
+    pas la key image. Au redémarrage, `spent_key_images` était incomplet et un
+    rejeu de la même key image passait — la protection anti-double-dépense
+    était perdue.
+    """
+    connection = FakeConnection()
+    store = _store_with(connection)
+    store.save_spent("output_3", "ab" * 32, 123.0)
+
+    assert connection.transactions == ["begin", "commit"], connection.transactions
+    # Les deux écritures sont dans la MÊME transaction : elles sont encadrées.
+    assert len(connection.statements) == 2
+
+
+def test_le_portefeuille_est_persiste_et_recharge():
+    """C3 : sans persistance du portefeuille, les outputs restaurés ne sont
+    plus dépensables après un redémarrage (409 une fois sur deux)."""
+
+    class WalletConnection(FakeConnection):
+        def __init__(self):
+            super().__init__()
+            self.wallet_row = None
+
+        def cursor(self):
+            connection = self
+
+            class WalletCursor(FakeCursor):
+                def execute(self, sql, params=None):
+                    result = super().execute(sql, params)
+                    if sql.strip().upper().startswith("SELECT VIEW_PRIVATE"):
+                        self._rows = (
+                            [connection.wallet_row] if connection.wallet_row else []
+                        )
+                    return result
+
+            return WalletCursor(connection)
+
+    connection = WalletConnection()
+    store = _store_with(connection)
+
+    # Aucun portefeuille : on en crée un.
+    assert store.load_wallet() is None
+    store.save_wallet("aa" * 32, "bb" * 32, 1.0)
+    assert any("INSERT INTO wallet" in query for query, _ in connection.statements)
+
+    # Un portefeuille existe : il est rechargé, donc les outputs restaurés
+    # restent dépensables.
+    connection.wallet_row = ("cc" * 32, "dd" * 32)
+    assert store.load_wallet() == ("cc" * 32, "dd" * 32)
+
+
+def test_la_restauration_conserve_les_key_images_sans_outputs():
+    """R3 : une base dont tous les outputs sont en quarantaine doit quand même
+    conserver ses key images, sinon l'anti-double-dépense repart en arrière."""
+    connection = FakeConnection(output_rows=[], key_images=["11" * 32])
+    outputs, key_images, spent, highest = _store_with(connection).load()
+
+    assert outputs == {}
+    assert key_images == {"11" * 32}
+    assert highest == 0
 
 
 def test_une_erreur_d_ecriture_degrade_sans_lever():

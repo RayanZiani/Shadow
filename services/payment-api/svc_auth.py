@@ -44,5 +44,10 @@ def require_service_token(x_service_token: str | None = Header(default=None)) ->
                 "(python tools/init_env.py)."
             ),
         )
-    if not x_service_token or not hmac.compare_digest(x_service_token, expected):
+    # `.encode()` : `compare_digest` sur des `str` lève TypeError dès qu'un
+    # caractère est non-ASCII (un en-tête peut en contenir). Comparer des
+    # octets reste à temps constant et ne produit jamais de 500.
+    if not x_service_token or not hmac.compare_digest(
+        x_service_token.encode(), expected.encode()
+    ):
         raise HTTPException(status_code=401, detail="jeton de service invalide")

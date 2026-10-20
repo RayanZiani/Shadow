@@ -24,6 +24,7 @@ import json
 import math
 import os
 import re
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -274,8 +275,12 @@ def extractive_answer(question: str, results: list[dict]) -> str:
             return False
         return True
 
-    candidates: list[tuple[str, str]] = []
-    for result in results:
+    # Chaque candidat porte sa position de passage (`rank`). Le rang ne peut
+    # pas être recalculé après coup par recherche de sous-chaîne : une ligne
+    # de tableau transformée en phrase n'existe plus telle quelle dans le
+    # Markdown d'origine, et se voyait attribuer un rang par défaut faux.
+    candidates: list[tuple[str, str, int]] = []
+    for rank, result in enumerate(results):
         # Les documents sont coupés à 80 colonnes : couper sur `\n` casserait
         # les phrases en plein milieu (« … transaction de preuve — prend »).
         # On recolle donc les lignes d'un même paragraphe, puis on sépare sur
@@ -292,32 +297,21 @@ def extractive_answer(question: str, results: list[dict]) -> str:
                     sentence = _row_as_sentence(line)
                     if sentence is None or not numeric_re.search(sentence):
                         continue
-                    candidates.append((sentence, result["source"]))
+                    candidates.append((sentence, result["source"], rank))
                 continue
-            candidates.append((" ".join(lines), result["source"]))
+            candidates.append((" ".join(lines), result["source"], rank))
 
     # Phrases reconstituées : un paragraphe peut contenir plusieurs phrases.
-    sentences: list[tuple[str, str]] = []
-    for text, source in candidates:
+    sentences: list[tuple[str, str, int]] = []
+    for text, source, rank in candidates:
         for sentence in re.split(r"(?<=[.!?])\s+", text):
             sentence = sentence.strip()
             if usable(sentence):
-                sentences.append((sentence, source))
+                sentences.append((sentence, source, rank))
     candidates = sentences
 
-    # Un passage de tableau n'a pas de rang individuel : on garde l'ordre de
-    # pertinence du passage qui le contient, déjà porté par `results`.
     scored: list[tuple[float, str, str]] = []
-    rank_of = {}
-    for position, result in enumerate(results):
-        for sentence, source in candidates:
-            if source == result["source"] and sentence in result["text"].replace(
-                "\n", " "
-            ):
-                rank_of.setdefault(sentence, position)
-
-    for sentence, source in candidates:
-        rank = rank_of.get(sentence, len(results) - 1)
+    for sentence, source, rank in candidates:
         overlap = len(terms & set(tokenize(sentence)))
         carries_number = bool(numeric_re.search(sentence))
         if not overlap and not (numeric_hint and carries_number and rank <= 2):
@@ -335,6 +329,15 @@ def extractive_answer(question: str, results: list[dict]) -> str:
 
     if not scored:
         best = results[0]
+        # Quand la question attend une valeur, renvoyer le tableau Markdown brut
+        # est le pire des cas (illisible à l'oral). On extrait la première
+        # ligne de tableau exploitable, sinon on cite le passage tel quel.
+        if numeric_hint:
+            for line in best["text"].splitlines():
+                if line.strip().startswith("|"):
+                    sentence = _row_as_sentence(line)
+                    if sentence and numeric_re.search(sentence):
+                        return f"{sentence} [{best['source']}]"
         return f"D'après `{best['source']}` (§{best['heading']}) : {best['text'][:400]}"
 
     picked: list[tuple[str, str]] = []
@@ -363,17 +366,48 @@ def extractive_answer(question: str, results: list[dict]) -> str:
 #   3. le mode extractif répond immédiatement.
 OLLAMA_CONNECT_TIMEOUT = 2.0
 OLLAMA_BREAKER_SECONDS = 30.0
-_breaker = {"down_until": 0.0, "last_error": None}
+
+# `/ask` est un endpoint SYNCHRONE : FastAPI l'exécute dans un threadpool (40
+# threads). Sans verrou, N requêtes simultanées lisaient toutes le disjoncteur
+# fermé avant qu'une seule ne l'ait tripé, et N appels bloquants partaient —
+# de quoi saturer le threadpool et faire échouer le healthcheck Docker.
+_breaker_lock = threading.Lock()
+_breaker = {"down_until": 0.0, "last_error": None, "probing": False}
 
 
 def ollama_available(cfg: dict) -> bool:
     """État du disjoncteur. Ne fait AUCUN appel réseau : instantané."""
-    return time.time() >= _breaker["down_until"]
+    with _breaker_lock:
+        return time.time() >= _breaker["down_until"]
+
+
+def _acquire_probe() -> bool:
+    """Un seul thread à la fois tente Ollama (single-flight).
+
+    Les autres repartent immédiatement en mode extractif : c'est exactement le
+    comportement voulu quand le service est éteint.
+    """
+    with _breaker_lock:
+        if time.time() < _breaker["down_until"]:
+            return False
+        if _breaker["probing"]:
+            return False
+        _breaker["probing"] = True
+        return True
+
+
+def _release_probe(error: str | None) -> None:
+    with _breaker_lock:
+        _breaker["probing"] = False
+        if error is None:
+            _breaker["last_error"] = None
+        else:
+            _breaker["down_until"] = time.time() + OLLAMA_BREAKER_SECONDS
+            _breaker["last_error"] = error
 
 
 def _trip_breaker(error: str) -> None:
-    _breaker["down_until"] = time.time() + OLLAMA_BREAKER_SECONDS
-    _breaker["last_error"] = error
+    _release_probe(error)
 
 
 def ollama_generate(question: str, results: list[dict], cfg: dict) -> str | None:
@@ -384,7 +418,8 @@ def ollama_generate(question: str, results: list[dict], cfg: dict) -> str | None
     """
     import httpx
 
-    if not ollama_available(cfg):
+    if not _acquire_probe():
+        # Disjoncteur ouvert, ou un autre thread sonde déjà : on ne bloque pas.
         return None
 
     context = "\n\n".join(
@@ -411,7 +446,7 @@ def ollama_generate(question: str, results: list[dict], cfg: dict) -> str | None
         )
         response.raise_for_status()
         answer = (response.json().get("response") or "").strip()
-        _breaker["last_error"] = None
+        _release_probe(None)
         return answer or None
     except Exception as exc:  # noqa: BLE001 - le mode dégradé est explicite
         _trip_breaker(f"{type(exc).__name__}")
@@ -428,11 +463,19 @@ def ollama_config() -> dict:
 
 def ollama_health(cfg: dict) -> dict:
     """État pour `/healthz`, sans bloquer : lit le disjoncteur, pas le réseau."""
-    if not ollama_available(cfg):
-        remaining = round(_breaker["down_until"] - time.time(), 1)
+    with _breaker_lock:
+        down_until = _breaker["down_until"]
+        last_error = _breaker["last_error"]
+        probing = _breaker["probing"]
+    now = time.time()
+    if now < down_until:
         return {
             "state": "unreachable",
-            "last_error": _breaker["last_error"],
-            "retry_in_seconds": max(0.0, remaining),
+            "last_error": last_error,
+            "retry_in_seconds": round(down_until - now, 1),
         }
-    return {"state": "unknown", "last_error": _breaker["last_error"]}
+    return {
+        "state": "probing" if probing else "unknown",
+        "last_error": last_error,
+        "retry_in_seconds": 0.0,
+    }

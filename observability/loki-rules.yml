@@ -28,10 +28,11 @@ groups:
             `{service="{{ $labels.service }}"}` puis filtrer `ERROR`.
 
       - alert: PaiementRefuse
-        # `payment-api` journalise un 502 quand le registre refuse un paiement.
-        # C'est le signal le plus direct d'une chaîne cassée côté boutique.
+        # La ligne « paiement refusé » est écrite par **shop-api**, pas par
+        # payment-api (qui lève une HTTPException sans la journaliser). La règle
+        # visait `payment-api` : elle ne pouvait donc jamais se déclencher.
         expr: |
-          sum(count_over_time({service="payment-api"} |= "paiement refusé" [3m])) > 0
+          sum(count_over_time({service="shop-api"} |= "paiement refusé" [3m])) > 0
         for: 0s
         labels:
           severity: critical
@@ -58,8 +59,11 @@ groups:
             est toujours un défaut de code, jamais une attaque réussie.
 
       - alert: JetonServiceAbsentDansLesLogs
+        # La chaîne « SERVICE_TOKEN non configuré » n'apparaît que dans le
+        # corps d'une HTTPException, pas dans un log. On cible le symptôme
+        # réellement journalisé : un 503 sur une route d'administration.
         expr: |
-          sum(count_over_time({service=~".+"} |= "SERVICE_TOKEN non configuré" [5m])) > 0
+          sum(count_over_time({service=~".+"} |= "503" [5m])) > 0
         for: 0s
         labels:
           severity: critical

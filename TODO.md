@@ -1,6 +1,6 @@
 # TODO — ce qui reste à faire
 
-> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (164 tests verts,
+> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (181 tests verts),
 > chaîne P0 en 6,6-7,2 s, 19 services `Up`).
 > **Mise à jour du 20/10 (soir)** : les nouvelles règles du jury changent le
 > périmètre — boutique en base, front vitrine, back d'administration, paiement

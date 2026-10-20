@@ -111,6 +111,12 @@ OUTPUTS: dict[str, dict] = {}
 _registry_seq = 0
 
 spent_key_images: set[str] = set()
+
+# Réservations en cours : une key image est marquée ici AVANT le premier appel
+# au noyau, et libérée si la vérification échoue. Sans cela, deux requêtes
+# concurrentes passaient toutes les deux le test de double dépense.
+_key_image_lock = asyncio.Lock()
+_pending_key_images: set[str] = set()
 # Outputs réellement dépensés. On suit l'IDENTIFIANT en plus de la key image :
 # la key image est produite par le noyau cryptographique et sa dérivation peut
 # changer (placeholder -> bLSAG réel). Filtrer `/outputs?unspent=true` sur une
@@ -148,9 +154,32 @@ async def _crypto(path: str, payload: dict, timeout: float = 5.0) -> dict:
 
 
 async def _bootstrap_wallet() -> None:
-    """Génère (ou recharge) la paire de clés et publie les clés publiques."""
+    """Génère (ou recharge) la paire de clés et publie les clés publiques.
+
+    Ordre de résolution, du plus stable au plus volatil :
+
+    1. `DEMO_VIEW_KEY_HEX` / `DEMO_SPEND_KEY_HEX` (rejeu exact de la démo) ;
+    2. le portefeuille persisté dans PostgreSQL (survit au redémarrage) ;
+    3. des clés aléatoires (premier démarrage, ou registre en mémoire).
+
+    Le point 2 est ce qui manquait : sans lui, un redémarrage tirait de
+    nouvelles clés alors que les outputs restaurés appartenaient aux
+    anciennes, et `/tx/submit` répondait 409 une fois sur deux.
+    """
+    if not WALLET["view_private"] or not WALLET["spend_private"]:
+        stored = REGISTRY.load_wallet()
+        if stored is not None:
+            WALLET["view_private"], WALLET["spend_private"] = stored
+            logging.getLogger("payment-api").info(
+                "portefeuille rechargé depuis PostgreSQL (les outputs "
+                "restaurés restent dépensables)"
+            )
+
     WALLET["view_private"] = WALLET["view_private"] or secrets.token_hex(32)
     WALLET["spend_private"] = WALLET["spend_private"] or secrets.token_hex(32)
+    REGISTRY.save_wallet(
+        WALLET["view_private"], WALLET["spend_private"], time.time()
+    )
     keys = await _crypto(
         "/crypto/keys",
         {
@@ -225,12 +254,15 @@ def _restore_registry() -> None:
     """
     global _registry_seq
     outputs, key_images, spent_ids, highest = REGISTRY.load()
-    if not outputs:
-        return
+    # Chaque partie est restaurée indépendamment : une base dont tous les
+    # outputs ont été mis en quarantaine doit quand même conserver ses key
+    # images, sinon la protection anti-double-dépense repart en arrière.
     OUTPUTS.update(outputs)
     spent_key_images.update(key_images)
     spent_output_ids.update(spent_ids)
     _registry_seq = max(_registry_seq, highest)
+    if not outputs and not key_images:
+        return
     logging.getLogger("payment-api").info(
         "registre rechargé : %d outputs, %d key images, %d dépensés",
         len(outputs),
@@ -243,8 +275,12 @@ def _restore_registry() -> None:
 async def lifespan(app: FastAPI):
     # 1. Recharger ce qui existe déjà (redémarrage) — AVANT d'émettre, sinon
     #    `_registry_seq` repart de zéro et écrase les identifiants existants.
+    # 1. Restaurer les outputs ET les key images.
     _restore_registry()
     try:
+        # 2. Recharger le portefeuille persistant (ou en créer un). Cet ordre
+        #    est critique : les outputs restaurés doivent être dépensables par
+        #    les clés qu'on va utiliser.
         await _bootstrap_wallet()
         await _mint(INITIAL_OUTPUTS)
         CRYPTO_STATUS["ready"] = True
@@ -479,7 +515,22 @@ async def submit_tx(req: TxSubmitRequest):
     if signed["pedersen_commitment_hex"] != commitment_in:
         raise HTTPException(status_code=500, detail="engagement incohérent avec la signature")
 
-    if signed["key_image_hex"] in spent_key_images:
+    key_image = signed["key_image_hex"]
+
+    # Réservation ATOMIQUE, avant tout `await` : c'est ce qui ferme la course.
+    # Deux requêtes simultanées avec la même key image : une seule réserve.
+    async with _key_image_lock:
+        if key_image in spent_key_images or key_image in _pending_key_images:
+            duplicate = True
+        elif req.real_output_id in spent_output_ids:
+            # L'output lui-même a déjà été dépensé : même si la key image a
+            # changé de dérivation, il n'y a rien à dépenser deux fois.
+            duplicate = True
+        else:
+            duplicate = False
+            _pending_key_images.add(key_image)
+
+    if duplicate:
         # Double dépense : on rejette MAIS on publie la télémétrie, sinon
         # l'attaque serait invisible pour le détecteur.
         await _send_telemetry(
@@ -505,6 +556,9 @@ async def submit_tx(req: TxSubmitRequest):
         },
     )
     if not verified["valid"]:
+        # La réservation est libérée : une signature invalide n'est pas une
+        # double dépense, le client doit pouvoir corriger et réessayer.
+        _pending_key_images.discard(key_image)
         raise HTTPException(status_code=400, detail=f"anneau invalide: {verified.get('reason')}")
 
     # 6. Équilibre des engagements : ∑C_in - ∑C_out = 0.
@@ -513,11 +567,14 @@ async def submit_tx(req: TxSubmitRequest):
         {"inputs": [commitment_in], "outputs": commitments_out},
     )
     if not balance["balanced"]:
+        _pending_key_images.discard(key_image)
         raise HTTPException(status_code=400, detail="engagements non équilibrés")
 
-    spent_key_images.add(signed["key_image_hex"])
-    spent_output_ids.add(req.real_output_id)
-    REGISTRY.save_spent(req.real_output_id, signed["key_image_hex"], time.time())
+    async with _key_image_lock:
+        _pending_key_images.discard(key_image)
+        spent_key_images.add(key_image)
+        spent_output_ids.add(req.real_output_id)
+    REGISTRY.save_spent(req.real_output_id, key_image, time.time())
 
     latency_ms = (time.perf_counter() - started) * 1000
     ages = [OUTPUTS[i]["age_days"] for i in decoy_ids]
@@ -632,26 +689,42 @@ def _observation(
     }
 
 
+# Compteurs de télémétrie perdue. Un non-2xx (401/503 parce que le jeton de
+# service manque, par exemple) n'est PAS une exception `httpx` : sans ce
+# contrôle, le détecteur ne recevait plus rien et personne ne le savait.
+TELEMETRY = {"sent": 0, "dropped": 0, "last_error": None}
+
+
 async def _send_telemetry(observation: dict):
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(
+            response = await client.post(
                 f"{ML_DETECTOR_URL}/ingest", json=observation, headers=_service_headers()
             )
-    except httpx.HTTPError:
-        pass  # le ML ne doit jamais faire planter un paiement légitime
+        if response.status_code >= 400:
+            TELEMETRY["dropped"] += 1
+            TELEMETRY["last_error"] = f"HTTP {response.status_code}"
+        else:
+            TELEMETRY["sent"] += 1
+    except httpx.HTTPError as exc:
+        # Le ML ne doit jamais faire planter un paiement légitime, mais la
+        # perte doit être comptée et visible.
+        TELEMETRY["dropped"] += 1
+        TELEMETRY["last_error"] = type(exc).__name__
 
 
 async def _report_success_tx(detail: dict):
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(
+            response = await client.post(
                 REMEDIATION_STATE_URL,
                 json={"state": "NORMAL_TX", "detail": detail},
                 headers=_service_headers(),
             )
-    except httpx.HTTPError:
-        pass
+        if response.status_code >= 400:
+            TELEMETRY["last_error"] = f"state/report HTTP {response.status_code}"
+    except httpx.HTTPError as exc:
+        TELEMETRY["last_error"] = type(exc).__name__
 
 
 # ---------------------------------------------------------------------- PIN
@@ -688,7 +761,11 @@ async def verify_pin(req: PinRequest):
     pin_attempts.append(now)
     # `PIN_CODE` est un secret de configuration, jamais une constante du code :
     # la valeur 1234 qui figurait ici était une faille volontaire.
-    ok = hmac.compare_digest(req.pin, PIN_CODE)
+    #
+    # `.encode()` : sur des `str`, `compare_digest` lève TypeError dès qu'un
+    # caractère est non-ASCII. Un PIN `"é"` provoquait un 500 SANS incrémenter
+    # le compteur d'échecs ni le verrouillage — un angle mort.
+    ok = hmac.compare_digest(req.pin.encode(), PIN_CODE.encode())
     if not ok:
         pin_failures.append(now)
         _pin_state["failures"] += 1
@@ -912,6 +989,9 @@ def metrics():
         "# HELP shadow_registry_durable 1 si le registre d'outputs survit a un redemarrage",
         "# TYPE shadow_registry_durable gauge",
         f"shadow_registry_durable {1 if REGISTRY.available else 0}",
+        "# HELP shadow_telemetry_dropped_total Observations perdues (ML injoignable ou jeton refuse)",
+        "# TYPE shadow_telemetry_dropped_total counter",
+        f"shadow_telemetry_dropped_total {TELEMETRY['dropped']}",
     ]
     return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
@@ -934,4 +1014,7 @@ def healthz():
         # `durable: false` = registre en mémoire : un redémarrage perd les
         # outputs, donc la transaction de preuve. Publié, jamais silencieux.
         "registry": REGISTRY.health(),
+        # `dropped > 0` = le détecteur ne reçoit plus la télémétrie (jeton
+        # absent, service arrêté). Sans ce champ, la panne était invisible.
+        "telemetry": TELEMETRY,
     }

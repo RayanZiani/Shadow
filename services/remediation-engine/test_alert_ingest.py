@@ -32,14 +32,22 @@ def stub_incident(monkeypatch):
     calls: list[str] = []
 
     async def fake_run_incident(payload):
-        calls.append(payload.diagnostic)
+        try:
+            calls.append(payload.diagnostic)
+        finally:
+            # Le vrai `_run_incident` libère `_busy` dans son `finally` : le
+            # stub doit faire pareil, sinon le deuxième incident du test est
+            # refusé pour une raison qui n'a rien à voir avec le routage.
+            main._busy["value"] = False
 
     monkeypatch.setattr(main, "_run_incident", fake_run_incident)
     main._last_alert_at.clear()
     main._alert_history.clear()
+    main._busy["value"] = False
     yield calls
     main._last_alert_at.clear()
     main._alert_history.clear()
+    main._busy["value"] = False
 
 
 def _client():
@@ -103,6 +111,10 @@ def test_les_doublons_sont_bornees(stub_incident):
     async def scenario():
         async with _client() as client:
             first = await client.post("/alert", json=_alert("SondeTransactionEnEchec"))
+            # Laisse la tâche de fond libérer `_busy` : sans cela, le second
+            # serait refusé pour « remédiation déjà en cours » et non pour
+            # anti-rebond — le test ne prouverait plus ce qu'il annonce.
+            await asyncio.sleep(0.01)
             second = await client.post("/alert", json=_alert("SondeTransactionEnEchec"))
             assert first.json()["acted"] == 1
             assert second.json()["acted"] == 0
@@ -158,3 +170,49 @@ def test_un_panic_dans_les_logs_ouvre_un_incident(stub_incident):
 
     asyncio.run(scenario())
     assert stub_incident == ["panic_in_logs"]
+
+
+def test_deux_alertes_actionnables_ne_lancent_quun_playbook(stub_incident):
+    """E2 : le verrou doit être réservé AVANT `create_task`.
+
+    Avant le correctif, `if _lock.locked()` était testé dans le handler, mais
+    la tâche n'avait pas encore pris le verrou : deux alertes actionnables dans
+    le même payload lançaient deux playbooks. Alertmanager regroupe par
+    `alertname`, donc ce cas reste possible avec deux alertes distinctes.
+    """
+    async def scenario():
+        async with _client() as client:
+            payload = {
+                "status": "firing",
+                "alerts": [
+                    {
+                        "status": "firing",
+                        "labels": {
+                            "alertname": "NoyauCryptoIndisponible",
+                            "severity": "critical",
+                            "fingerprint": "crypto",
+                        },
+                        "annotations": {},
+                    },
+                    {
+                        "status": "firing",
+                        "labels": {
+                            "alertname": "WafIndisponible",
+                            "severity": "critical",
+                            "fingerprint": "waf",
+                        },
+                        "annotations": {},
+                    },
+                ],
+            }
+            response = await client.post("/alert", json=payload)
+            body = response.json()
+            await asyncio.sleep(0.02)
+            return body
+
+    body = asyncio.run(scenario())
+    assert body["acted"] == 1, body
+    assert body["ignored"] == 1, body
+    assert body["details"][1]["reason"] == "remediation_deja_en_cours"
+    # Un seul playbook lancé, pas deux.
+    assert len(stub_incident) == 1, stub_incident

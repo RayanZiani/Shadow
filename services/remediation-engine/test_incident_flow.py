@@ -151,3 +151,60 @@ async def main_async():
 
 if __name__ == "__main__":
     asyncio.run(main_async())
+
+
+def test_une_erreur_du_playbook_publie_un_etat_terminal():
+    """E1 : une erreur d'exécution ne doit jamais laisser l'état en REMEDIATING.
+
+    `_run_playbook` ne capturait que FileNotFoundError et TimeoutExpired. Un
+    PermissionError (binaire non exécutable) ou un IsADirectoryError remontait,
+    la tâche de fond mourait, et le dashboard restait orange indéfiniment.
+    """
+    import asyncio
+    import os
+    import tempfile
+
+    import main
+
+    async def scenario():
+        # `ANSIBLE_BIN` pointe un DOSSIER : subprocess.run lève une OSError
+        # (PermissionError ou IsADirectoryError selon la plateforme).
+        directory = tempfile.mkdtemp()
+        previous = main.ANSIBLE_BIN
+        main.ANSIBLE_BIN = directory
+        try:
+            result = await main._run_playbook("test")
+        finally:
+            main.ANSIBLE_BIN = previous
+            os.rmdir(directory)
+        return result
+
+    result = asyncio.run(scenario())
+    # Un code retour non nul explicite, pas une exception qui remonte.
+    assert result.returncode != 0
+    assert result.returncode in (126, 127, 124)
+    assert result.stderr
+
+
+def test_un_incident_qui_echoue_laisse_un_etat_terminal():
+    """L'état ne doit jamais rester bloqué en REMEDIATING."""
+    import asyncio
+
+    import main
+
+    async def scenario():
+        async with _client() as client:
+            main._busy["value"] = False
+            response = await client.post("/incident", json=INCIDENT)
+            assert response.status_code == 200
+            for _ in range(200):
+                await asyncio.sleep(0.05)
+                if main.bus.current["state"] in (
+                    "RECOVERED_TX",
+                    "REMEDIATION_FAILED",
+                ):
+                    break
+            return main.bus.current["state"]
+
+    state = asyncio.run(scenario())
+    assert state in ("RECOVERED_TX", "REMEDIATION_FAILED"), state

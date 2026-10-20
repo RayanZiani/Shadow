@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS key_images (
     spent_at   DOUBLE PRECISION NOT NULL
 );
 
+-- Portefeuille de démonstration : sans lui, un redémarrage tirait de
+-- nouvelles clés et les outputs restaurés devenaient non dépensables.
+CREATE TABLE IF NOT EXISTS wallet (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    view_private   TEXT NOT NULL,
+    spend_private  TEXT NOT NULL,
+    created_at     DOUBLE PRECISION NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_outputs_spent ON outputs(spent);
 CREATE INDEX IF NOT EXISTS idx_outputs_internal ON outputs(internal);
 """
@@ -161,17 +170,61 @@ class RegistryStore:
             self._degrade(exc)
 
     def save_spent(self, output_id: str, key_image: str, spent_at: float) -> None:
+        """Marque l'output dépensé ET enregistre la key image, ATOMIQUEMENT.
+
+        Deux `execute` séparés en autocommit laissaient une fenêtre : si le
+        processus mourait entre les deux, la base marquait l'output dépensé
+        mais pas la key image, et un rejeu passait au redémarrage suivant.
+        """
+        if not self.available:
+            return
+        try:
+            with self._conn.transaction():
+                with self._conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE outputs SET spent = TRUE WHERE id = %s", (output_id,)
+                    )
+                    cursor.execute(
+                        "INSERT INTO key_images(key_image, spent_at) VALUES (%s, %s) "
+                        "ON CONFLICT (key_image) DO NOTHING",
+                        (key_image, spent_at),
+                    )
+        except Exception as exc:  # noqa: BLE001
+            self._degrade(exc)
+
+    # --- Portefeuille ------------------------------------------------------
+
+    def load_wallet(self) -> tuple[str, str] | None:
+        """Clés privées persistées, ou None si aucune n'a encore été écrite.
+
+        Sans cette persistance, `_bootstrap_wallet` tirait de nouvelles clés à
+        chaque démarrage : les outputs restaurés devenaient non dépensables et
+        `/tx/submit` répondait 409 une fois sur deux après un redémarrage.
+        """
+        if not self.available:
+            return None
+        try:
+            with self._conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT view_private, spend_private FROM wallet WHERE id = 1"
+                )
+                row = cursor.fetchone()
+        except Exception as exc:  # noqa: BLE001
+            self._degrade(exc)
+            return None
+        if row is None:
+            return None
+        return str(row[0]), str(row[1])
+
+    def save_wallet(self, view_private: str, spend_private: str, created_at: float) -> None:
         if not self.available:
             return
         try:
             with self._conn.cursor() as cursor:
                 cursor.execute(
-                    "UPDATE outputs SET spent = TRUE WHERE id = %s", (output_id,)
-                )
-                cursor.execute(
-                    "INSERT INTO key_images(key_image, spent_at) VALUES (%s, %s) "
-                    "ON CONFLICT (key_image) DO NOTHING",
-                    (key_image, spent_at),
+                    "INSERT INTO wallet(id, view_private, spend_private, created_at) "
+                    "VALUES (1, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                    (view_private, spend_private, created_at),
                 )
         except Exception as exc:  # noqa: BLE001
             self._degrade(exc)
@@ -195,6 +248,7 @@ class RegistryStore:
             with self._conn.cursor() as cursor:
                 cursor.execute("DELETE FROM key_images")
                 cursor.execute("DELETE FROM outputs")
+                cursor.execute("DELETE FROM wallet")
         except Exception as exc:  # noqa: BLE001
             self._degrade(exc)
 

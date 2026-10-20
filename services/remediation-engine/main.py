@@ -162,11 +162,14 @@ async def handle_incident(payload: IncidentPayload):
     fonctionnait — panne constatée en recette. On répond donc 202 tout de
     suite, et l'état est publié au fil de l'exécution via /events.
     """
-    if _lock.locked():
-        # Un incident est déjà en cours : on refuse explicitement plutôt que
-        # de mettre en file. Le détecteur a son propre cooldown.
+    # Réservation SYNCHRONE : deux appels simultanés ne peuvent pas réserver
+    # tous les deux, contrairement à `_lock.locked()` qui laissait une fenêtre
+    # entre le test et la prise du verrou par la tâche.
+    if _busy["value"]:
         return {"accepted": False, "reason": "remédiation déjà en cours"}
+    _busy["value"] = True
 
+    global _current_incident
     _current_incident = payload
     asyncio.create_task(_run_incident(payload))
     return {"accepted": True, "status": "remediation_started"}
@@ -202,6 +205,12 @@ ACTIONABLE_ALERTS = {
 
 # Alertmanager réémet la même alerte toutes les 4 h ; on borne les doublons.
 ALERT_COOLDOWN_SECONDS = 60.0
+# Verrou « une remédiation à la fois ». `_lock.locked()` ne suffit pas : entre
+# le test et `create_task`, la tâche n'a pas encore acquis le verrou, donc deux
+# requêtes simultanées passent toutes les deux. `_busy` est positionné de
+# façon SYNCHRONE dans le handler.
+_busy = {"value": False}
+
 _alert_history: deque[dict] = deque(maxlen=200)
 _last_alert_at: dict[str, float] = {}
 
@@ -247,7 +256,7 @@ async def handle_alert(payload: AlertmanagerPayload):
             entry["reason"] = "anti_rebond"
             ignored.append(entry)
             continue
-        if _lock.locked():
+        if _busy["value"]:
             entry["reason"] = "remediation_deja_en_cours"
             ignored.append(entry)
             continue
@@ -255,6 +264,9 @@ async def handle_alert(payload: AlertmanagerPayload):
         _last_alert_at[fingerprint] = received
         entry["acted"] = True
         acted.append(entry)
+        # Réservation synchrone avant `create_task` : deux alertes actionnables
+        # dans le même payload ne lancent plus deux playbooks.
+        _busy["value"] = True
 
         incident = IncidentPayload(
             anomaly_score=0.0,
@@ -285,8 +297,31 @@ def list_alerts(limit: int = 50):
 
 
 async def _run_incident(payload: IncidentPayload) -> None:
+    """Exécute un incident et publie TOUJOURS un état terminal.
+
+    Le `try/except/finally` n'est pas décoratif : une exception dans le
+    playbook laissait auparavant l'état bloqué en `REMEDIATING`, le dashboard
+    orange, et `/state/report` refusait `NORMAL_TX` indéfiniment.
+    """
     global _current_incident
-    async with _lock:  # une remédiation à la fois, pas de double déclenchement
+    try:
+        async with _lock:  # une remédiation à la fois, pas de double déclenchement
+            await _run_incident_locked(payload)
+    except Exception as exc:  # noqa: BLE001 - un incident ne doit jamais bloquer le SI
+        logging.getLogger("remediation-engine").exception(
+            "incident interrompu : %s", exc
+        )
+        bus.publish(
+            "REMEDIATION_FAILED",
+            {"error": f"{type(exc).__name__}: {exc}"[:200], "diagnostic": payload.diagnostic},
+        )
+    finally:
+        _current_incident = None
+        _busy["value"] = False
+
+
+async def _run_incident_locked(payload: IncidentPayload) -> None:
+    if True:  # conserve l'indentation du corps d'origine
         start = time.time()
         bus.publish(
             "UNDER_ATTACK",
@@ -370,6 +405,16 @@ async def _run_playbook(diagnostic: str) -> subprocess.CompletedProcess:
             returncode=124,
             stdout=(exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
             stderr="timeout",
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # PermissionError (binaire non exécutable), IsADirectoryError
+        # (ANSIBLE_BIN pointant un dossier), etc. Auparavant l'exception
+        # remontait et l'état restait bloqué en REMEDIATING.
+        return subprocess.CompletedProcess(
+            args=[ANSIBLE_BIN],
+            returncode=126,
+            stdout="",
+            stderr=f"{type(exc).__name__}: {exc}"[:200],
         )
 
 

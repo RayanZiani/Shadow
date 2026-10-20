@@ -126,10 +126,11 @@ python3 -m venv .venv
 | Suite | Fichier | Ce qu'elle prouve |
 |---|---|---|
 | remediation-engine | `services/remediation-engine/test_state_bus.py` (7) | contrat d'état, SSE, `seq` croissant, abonné lent non bloquant |
-| remediation-engine | `services/remediation-engine/test_incident_flow.py` (5) | ordre `UNDER_ATTACK → REMEDIATING → RECOVERED_TX`, verrou, échec explicite |
+| remediation-engine | `services/remediation-engine/test_incident_flow.py` (5) | ordre `UNDER_ATTACK → REMEDIATING → RECOVERED_TX` |
+| remediation-engine | `services/remediation-engine/test_incident_flow.py` (2) | état terminal garanti : une erreur du playbook publie `REMEDIATION_FAILED` | ordre `UNDER_ATTACK → REMEDIATING → RECOVERED_TX`, verrou, échec explicite |
 | ml-detector | `services/ml-detector/test_detector.py` (12) | invariance au volume, médiane des intervalles, sonde exclue, purge de fenêtre, anti-rebond, réarmement |
-| payment-api | `services/payment-api/test_registry.py` (8) | journal PostgreSQL, rechargement au démarrage, repli explicite, écriture groupée |
-| payment-api | `services/payment-api/test_payment_api.py` (13) | leurres gamma, `unspent`, quarantaine des plus anciens, `ring-size`, PIN |
+| payment-api | `services/payment-api/test_registry.py` (11) | journal PostgreSQL, rechargement au démarrage, repli explicite, écriture groupée |
+| payment-api | `services/payment-api/test_payment_api.py` (15) | leurres gamma, `unspent`, quarantaine des plus anciens, `ring-size`, PIN |
 | hardware | `hardware/bridge/test_hardware_bridge.py` (9) | trame série, états inconnus, mode `--rich`, pont strictement en lecture |
 | monero-crypto-core | `services/monero-crypto-core/src/main.rs` (9) | décodage de point, Pedersen homomorphe, chiffrement réversible, signature d'anneau valide, falsifications rejetées, key image déterministe, dérivation one-time |
 | monero-crypto-core | `services/monero-crypto-core/test_crypto_flow.py` (10) | **par HTTP** : émission, dérivation, scan view-only, audit, équilibre des engagements, bLSAG, rejeu |
@@ -137,11 +138,12 @@ python3 -m venv .venv
 | shadow-api | `services/shadow-api/test_shadow_api.py` (4) | honeypot : jamais d'erreur visible, journal borné |
 | auth-service | `services/auth-service/test_auth_service.py` (9) | clé lue dans Vault, 503 si Vault muet, cache et rotation |
 | back-office | `services/backoffice/test_backoffice.py` (25) | parcours identifiant → visage → mot de passe, refus, blocage 5 min, LED, habilitations, audit |
-| boutique | `services/shop-api/test_shop_api.py` (21) | catalogue en base, panier, achat, stock réservé puis restitué, historique par capability token, administration |
-| assistant RAG | `services/rag-assistant/test_rag.py` (14) | index BM25 du dossier, question de référence, citations, mode dégradé extractif |
-| ingestion SIEM | `services/remediation-engine/test_alert_ingest.py` (8) | une alerte actionnable ouvre un incident, une alerte de confort non, anti-rebond, jeton |
+| boutique | `services/shop-api/test_postgres_dialect.py` (4) | aucun SQL ne compare un booléen à un entier (casse PostgreSQL) |
+| boutique | `services/shop-api/test_shop_api.py` (24) | catalogue en base, panier, achat, stock réservé puis restitué, historique par capability token, administration |
+| assistant RAG | `services/rag-assistant/test_rag.py` (16) | index BM25 du dossier, question de référence, citations, mode dégradé extractif |
+| ingestion SIEM | `services/remediation-engine/test_alert_ingest.py` (9) | une alerte actionnable ouvre un incident, une alerte de confort non, anti-rebond, jeton |
 
-Soit **164 tests**. Les tests HTTP du noyau se déclarent ignorés si
+Soit **181 tests**. Les tests HTTP du noyau se déclarent ignorés si
 `docker compose` n'est pas démarré. `cargo test` est lancé par `run_tests.sh` si `cargo` est
 présent.
 

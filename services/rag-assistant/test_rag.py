@@ -214,3 +214,74 @@ def test_les_phrases_ne_sont_pas_coupees_par_le_retour_a_la_ligne(retriever):
     first = answer.split(" [")[0]
     assert first.rstrip().endswith((".", "secondes", "humaine.", "minutes.")), first
     assert not first.startswith(("preuve —", "prend ", "—")), first
+
+
+def test_un_tableau_seul_repond_a_une_question_de_duree():
+    """Le rang d'une ligne de tableau ne doit pas être perdu.
+
+    `_row_as_sentence` transforme `| Durée | 6,6 à 7,2 s |` en
+    `Durée : 6,6 à 7,2 s` — qui n'est plus une sous-chaîne du Markdown. Quand
+    le rang était recalculé par sous-chaîne, la ligne recevait le rang par
+    défaut et était éliminée dès que `TOP_K` valait 4. Le repli renvoyait alors
+    le tableau brut, illisible.
+    """
+    results = [
+        {
+            "source": "docs/MESURE.md",
+            "heading": "Résultats",
+            "text": "| Durée de la chaîne P0 | 6,6 à 7,2 s (limite 90 s) |",
+            "score": 9.0,
+        },
+        {
+            "source": "docs/AUTRE.md",
+            "heading": "Contexte",
+            "text": "Le système est décrit ailleurs, sans aucune valeur chiffrée exploitable ici.",
+            "score": 5.0,
+        },
+        {
+            "source": "docs/ENCORE.md",
+            "heading": "Annexe",
+            "text": "Une annexe sans rapport direct avec la mesure de durée recherchée.",
+            "score": 4.0,
+        },
+        {
+            "source": "docs/FIN.md",
+            "heading": "Divers",
+            "text": "Divers compléments qui ne répondent pas à la question posée.",
+            "score": 3.0,
+        },
+    ]
+    answer = extractive_answer("combien de temps prend la reprise ?", results)
+
+    assert "6,6 à 7,2" in answer, answer
+    assert answer.startswith("Durée de la chaîne P0"), answer
+    # Le repli ne doit pas renvoyer le Markdown brut.
+    assert not answer.lstrip().startswith("|"), answer
+
+
+def test_le_disjoncteur_ne_laisse_passer_quune_sonde():
+    """L2 : single-flight — un seul thread interroge Ollama à la fois.
+
+    Sans cela, N requêtes simultanées lisaient toutes le disjoncteur fermé
+    avant qu'une seule ne l'ait tripé : N appels bloquants partaient et
+    saturaient le threadpool de FastAPI.
+    """
+    import time
+
+    import rag
+
+    rag._breaker.update(down_until=0.0, last_error=None, probing=False)
+
+    assert rag._acquire_probe() is True, "la première sonde doit passer"
+    assert rag._acquire_probe() is False, "la seconde doit être refusée"
+
+    # Après un échec, le disjoncteur est ouvert : plus aucune sonde.
+    rag._release_probe("ConnectError")
+    assert rag._acquire_probe() is False
+    assert rag.ollama_health({})["state"] == "unreachable"
+    assert rag.ollama_health({})["retry_in_seconds"] > 0
+
+    # Remise en état pour les autres tests.
+    rag._breaker.update(down_until=0.0, last_error=None, probing=False)
+    assert rag._acquire_probe() is True
+    rag._release_probe(None)

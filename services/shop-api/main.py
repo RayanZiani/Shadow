@@ -205,7 +205,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
         back-office. Un client ne peut donc pas se fabriquer un rôle admin.
         """
         expected = os.environ.get("SERVICE_TOKEN", "").strip()
-        if expected and x_service_token and secrets.compare_digest(x_service_token, expected):
+        # `.encode()` : `compare_digest` sur des `str` lève TypeError dès qu'un
+        # caractère est non-ASCII (un en-tête peut en contenir). On compare des
+        # octets, ce qui est à la fois correct et à temps constant.
+        if (
+            expected
+            and x_service_token
+            and secrets.compare_digest(x_service_token.encode(), expected.encode())
+        ):
             return {"username": "service", "role": "admin", "via": "service_token"}
         if not authorization or not authorization.lower().startswith("bearer "):
             raise HTTPException(
@@ -275,38 +282,73 @@ def create_app(database_url: str | None = None) -> FastAPI:
     # ------------------------------------------------------------------
     @app.get("/healthz")
     def healthz():
-        try:
-            db.query("SELECT 1 AS ok")
-            db_ok = True
-        except Exception:  # noqa: BLE001
-            db_ok = False
-        orders = db.one(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(total_cents), 0) AS revenue "
-            "FROM orders WHERE status = 'paid'"
-        ) or {"n": 0, "revenue": 0}
-        return {
-            "status": "ok" if db_ok else "degraded",
+        """Sonde de santé — ne lève JAMAIS, même base arrêtée.
+
+        Le `try` ne protégeait que la première requête : les deux suivantes
+        étaient dehors, donc une base arrêtée produisait un 500 et le
+        healthcheck Docker redémarrait le conteneur en boucle. Une sonde qui
+        tombe quand la dépendance tombe ne sert à rien : elle doit dire
+        `degraded`.
+        """
+        base = {
             "service": "shop-api",
             "database": "postgresql" if db.is_postgres else "sqlite",
-            "products": int(db.query("SELECT COUNT(*) AS n FROM products")[0]["n"]),
-            "orders_paid": int(orders["n"]),
-            "revenue_cents": int(orders["revenue"]),
             "payment_api": PAYMENT_API_URL,
             "service_token_configured": service_token_configured(),
+        }
+        try:
+            db.query("SELECT 1 AS ok")
+            orders = db.one(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(total_cents), 0) AS revenue "
+                "FROM orders WHERE status = 'paid'"
+            ) or {"n": 0, "revenue": 0}
+            products = db.query("SELECT COUNT(*) AS n FROM products")[0]["n"]
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **base,
+                "status": "degraded",
+                "error": f"{type(exc).__name__}: {exc}"[:200],
+                "products": 0,
+                "orders_paid": 0,
+                "revenue_cents": 0,
+            }
+        return {
+            **base,
+            "status": "ok",
+            "products": int(products),
+            "orders_paid": int(orders["n"]),
+            "revenue_cents": int(orders["revenue"]),
         }
 
     @app.get("/metrics")
     def metrics():
-        paid = db.one(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(total_cents), 0) AS revenue "
-            "FROM orders WHERE status = 'paid'"
-        ) or {"n": 0, "revenue": 0}
-        failed = db.one("SELECT COUNT(*) AS n FROM payments WHERE status = 'failed'")
-        pending = db.one("SELECT COUNT(*) AS n FROM payments WHERE status = 'pending'")
-        out_of_stock = db.one(
-            "SELECT COUNT(*) AS n FROM products WHERE active = 1 AND stock = 0"
-        )
+        """Métriques — dégradées plutôt qu'absentes si la base est muette.
+
+        Un scrape qui échoue pendant une panne de base, c'est précisément le
+        moment où Prometheus a besoin de la métrique. On expose donc
+        `shop_database_up 0` et des compteurs à zéro au lieu d'un 500.
+        """
+        try:
+            paid = db.one(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(total_cents), 0) AS revenue "
+                "FROM orders WHERE status = 'paid'"
+            ) or {"n": 0, "revenue": 0}
+            failed = db.one("SELECT COUNT(*) AS n FROM payments WHERE status = 'failed'")
+            pending = db.one("SELECT COUNT(*) AS n FROM payments WHERE status = 'pending'")
+            out_of_stock = db.one(
+                "SELECT COUNT(*) AS n FROM products WHERE active = TRUE AND stock = 0"
+            )
+            database_up = 1
+        except Exception:  # noqa: BLE001
+            paid = {"n": 0, "revenue": 0}
+            failed = {"n": 0}
+            pending = {"n": 0}
+            out_of_stock = {"n": 0}
+            database_up = 0
         lines = [
+            "# HELP shop_database_up 1 si la base repond",
+            "# TYPE shop_database_up gauge",
+            f"shop_database_up {database_up}",
             "# HELP shop_orders_paid_total Commandes payées",
             "# TYPE shop_orders_paid_total counter",
             f"shop_orders_paid_total {int(paid['n'])}",
@@ -330,7 +372,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if include_inactive:
             rows = db.query("SELECT * FROM products ORDER BY id")
         else:
-            rows = db.query("SELECT * FROM products WHERE active = 1 ORDER BY id")
+            rows = db.query("SELECT * FROM products WHERE active = TRUE ORDER BY id")
         return {"products": [public_product(row) for row in rows]}
 
     @app.get("/products/{product_id}")
@@ -461,11 +503,25 @@ def create_app(database_url: str | None = None) -> FastAPI:
         # 1. Réservation du stock + commande + paiement en attente, DANS une
         #    transaction. Si un article manque, rien n'est écrit.
         with db.transaction() as conn:
+            # Réclamation ATOMIQUE du panier : deux `checkout` simultanés (le
+            # double-clic sur « Payer ») ne peuvent pas créer deux commandes.
+            # Un seul `UPDATE` peut voir `checked_out_at IS NULL`.
+            claimed = db.tx_run(
+                conn,
+                "UPDATE carts SET checked_out_at = ? "
+                "WHERE id = ? AND checked_out_at IS NULL",
+                (now, cart["id"]),
+            )
+            if claimed == 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail="paiement déjà en cours pour ce panier",
+                )
             for item in items:
                 affected = db.tx_run(
                     conn,
                     "UPDATE products SET stock = stock - ?, updated_at = ? "
-                    "WHERE id = ? AND active = 1 AND stock >= ?",
+                    "WHERE id = ? AND active = TRUE AND stock >= ?",
                     (item["quantity"], now, item["product_id"], item["quantity"]),
                 )
                 if affected == 0:
@@ -587,6 +643,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 "VALUES(?,?,?,?)",
                 (payment_id, "failed", json.dumps({"error": failure_detail}), time.time()),
             )
+            # Le panier est RELÂCHÉ : un incident passager ne doit pas condamner
+            # le client. Il peut réessayer immédiatement.
+            db.tx_run(
+                conn,
+                "UPDATE carts SET checked_out_at = NULL WHERE id = ?",
+                (cart["id"],),
+            )
         LOG.warning("paiement refusé pour %s : %s", reference, failure_detail)
         return Response(
             status_code=502,
@@ -609,7 +672,16 @@ def create_app(database_url: str | None = None) -> FastAPI:
         # `customer_ref` est un capability token : sans lui, la commande n'est
         # pas lisible. On répond 404 (et non 403) pour ne pas révéler qu'elle
         # existe.
-        if not secrets.compare_digest(str(order["customer_ref"]), customer_ref or ""):
+        #
+        # Le format est validé AVANT la comparaison : un token non-ASCII
+        # provoquerait un TypeError dans `compare_digest` (donc un 500), et un
+        # 500 sur une référence existante / 404 sur une référence inconnue
+        # serait un oracle d'existence.
+        if not CUSTOMER_REF_RE.match(customer_ref or ""):
+            raise HTTPException(status_code=404, detail="commande inconnue")
+        if not secrets.compare_digest(
+            str(order["customer_ref"]).encode(), (customer_ref or "").encode()
+        ):
             raise HTTPException(status_code=404, detail="commande inconnue")
         return {"order": _order_payload(db, reference), "payment": _payment_payload(db, reference)}
 
@@ -658,7 +730,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 req.description,
                 req.price_cents,
                 req.stock,
-                1,
+                True,
                 req.image_url,
                 now,
                 now,
@@ -679,7 +751,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             if value is not None:
                 changes[field] = value
         if req.active is not None:
-            changes["active"] = 1 if req.active else 0
+            changes["active"] = bool(req.active)
         if not changes:
             return {"product": public_product(row), "changed": []}
         changes["updated_at"] = time.time()
@@ -704,7 +776,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if row is None:
             raise HTTPException(status_code=404, detail="article inconnu")
         db.run(
-            "UPDATE products SET active = 0, updated_at = ? WHERE id = ?",
+            "UPDATE products SET active = FALSE, updated_at = ? WHERE id = ?",
             (time.time(), product_id),
         )
         return {"deactivated": True, "id": product_id}
@@ -839,7 +911,7 @@ def _seed_catalog(db: Database) -> None:
                 product["description"],
                 product["price_cents"],
                 product["stock"],
-                1,
+                True,
                 None,
                 now,
                 now,

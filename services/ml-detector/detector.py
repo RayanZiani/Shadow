@@ -397,6 +397,19 @@ async def _trigger_remediation(
                 },
                 headers=headers,
             )
+        # Un non-2xx n'est PAS une exception `httpx` : sans ce test, un 401
+        # (jeton de service absent) passait pour un succès. Le webhook était
+        # cassé, `last_webhook_error` restait None, et l'alerte
+        # WebhookRemediationCasse ne se déclenchait jamais.
+        if response.status_code >= 400:
+            _last_webhook_error = f"HTTP {response.status_code}"
+            logger.error(
+                "incident REFUSÉ par %s (http=%s) — vérifier SERVICE_TOKEN",
+                REMEDIATION_WEBHOOK,
+                response.status_code,
+            )
+            return
+
         logger.warning(
             "incident transmis à %s (diagnostic=%s, score=%.2f, http=%s)",
             REMEDIATION_WEBHOOK,

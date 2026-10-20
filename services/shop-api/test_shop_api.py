@@ -450,3 +450,122 @@ def test_un_prix_envoye_par_le_client_est_ignore(client, stub):
     )
     assert response.status_code == 201
     assert response.json()["order"]["total_cents"] == product["price_cents"]
+
+
+def test_deux_checkouts_sur_le_meme_panier(app, client, stub):
+    """F9 : double-clic sur « Payer » ne doit pas créer deux commandes.
+
+    Le `WHERE stock >= ?` empêchait la survente, pas le double débit : deux
+    requêtes simultanées lisaient les mêmes `cart_items` et créaient deux
+    commandes, deux paiements.
+    """
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    db = app.state.db
+    db.run("UPDATE products SET stock = 20 WHERE sku = 'RING-24'")
+    product = _product(client, "RING-24")
+    cart = client.post("/cart").json()["cart"]
+    client.post(
+        f"/cart/{cart['token']}/items",
+        json={"product_id": product["id"], "quantity": 1},
+    )
+
+    orders_before = len(client.get("/admin/orders", headers=_admin_headers()).json()["orders"]) \
+        if _admin_headers() else 0
+
+    statuses: list[int] = []
+    lock = threading.Lock()
+
+    def pay() -> None:
+        buyer = TestClient(app)
+        response = buyer.post("/checkout", json={"cart_token": cart["token"]})
+        with lock:
+            statuses.append(response.status_code)
+
+    threads = [threading.Thread(target=pay) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    # Les deux issues sont correctes selon l'ordre d'arrivée :
+    #   409 = le second arrive pendant que le premier paie (réclamation) ;
+    #   400 = le second arrive après que le panier a été vidé.
+    # Ce qui doit être vrai DANS TOUS LES CAS : une seule commande créée.
+    assert statuses.count(201) == 1, statuses
+    assert all(code in (400, 409) for code in statuses if code != 201), statuses
+
+    orders = db.query(
+        "SELECT COUNT(*) AS n FROM orders WHERE reference IN ("
+        "  SELECT o.reference FROM orders o "
+        "  JOIN order_items oi ON oi.order_id = o.id "
+        "  WHERE oi.product_id = ?"
+        ")",
+        (product["id"],),
+    )[0]["n"]
+    # Une seule commande pour cet article, quel que soit l'ordre d'arrivée.
+    assert int(orders) == 1, f"{orders} commandes pour un seul panier"
+
+
+def test_un_token_non_ascii_ne_fuit_pas_lexistence(client, stub):
+    """F10 : un `customer_ref` non-ASCII provoquait un 500 sur une commande
+    existante et un 404 sur une commande inconnue — un oracle d'existence.
+
+    Les références sont `CMD-` + 8 hex, donc énumérables : le 500 disait
+    « celle-ci existe ».
+    """
+    token, _ = _cart_with(client, quantity=1)
+    body = client.post("/checkout", json={"cart_token": token}).json()
+    reference = body["order"]["reference"]
+    customer_ref = body["customer_ref"]
+
+    # Référence existante + token non-ASCII : doit être 404, jamais 500.
+    response = client.get(f"/orders/{reference}", params={"customer_ref": "é" * 20})
+    assert response.status_code == 404, response.status_code
+
+    # Référence inconnue + même token : même réponse. Pas d'oracle.
+    unknown = client.get("/orders/CMD-00000000", params={"customer_ref": "é" * 20})
+    assert unknown.status_code == 404
+
+    # Et le vrai token continue de fonctionner.
+    ok = client.get(f"/orders/{reference}", params={"customer_ref": customer_ref})
+    assert ok.status_code == 200
+
+
+def test_lhealthz_degrade_au_lieu_de_tomber(app, client):
+    """E5 : base arrêtée => `degraded`, jamais 500.
+
+    Le `try` ne couvrait que la première requête : une base arrêtée produisait
+    un 500, le healthcheck Docker redémarrait le conteneur en boucle, et le
+    scrape Prometheus échouait précisément pendant la panne.
+    """
+    application = app
+    original = application.state.db._conn
+
+    # On casse la connexion APRÈS le démarrage : entrer dans un nouveau
+    # `TestClient` relancerait le lifespan (donc `_seed_catalog`) et échouerait
+    # avant même d'atteindre la sonde.
+    application.state.db._conn = None
+    try:
+        health = client.get("/healthz")
+        assert health.status_code == 200, health.status_code
+        assert health.json()["status"] == "degraded"
+
+        metrics = client.get("/metrics")
+        assert metrics.status_code == 200
+        assert "shop_database_up 0" in metrics.text
+    finally:
+        application.state.db._conn = original
+
+    # Et le service repart normalement une fois la base revenue.
+    assert client.get("/healthz").json()["status"] == "ok"
+
+
+def _admin_headers() -> dict:
+    """En-tête d'administration si un jeton de test est configuré."""
+    import os
+
+    token = os.environ.get("SERVICE_TOKEN", "").strip()
+    return {"X-Service-Token": token} if token else {}
