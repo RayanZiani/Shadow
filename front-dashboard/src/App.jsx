@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import PinPad from "./PinPad.jsx";
+import RagAssistant from "./RagAssistant.jsx";
 import AdminPanel from "./auth/AdminPanel.jsx";
 import LoginPage from "./auth/LoginPage.jsx";
 import { api } from "./auth/api.js";
@@ -322,6 +323,11 @@ function Supervision({ user, onLogout, onOpenAdmin }) {
               )}
             </p>
           )}
+        </Card>
+
+        {/* Cinquième quadrant : l'IA/DATA n'apparaissait qu'en `curl`. */}
+        <Card title="Assistant RAG — dossier technique" className="md:col-span-2">
+          <RagAssistant />
         </Card>
 
         <Card title="Console de remédiation & conformité DORA">
