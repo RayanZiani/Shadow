@@ -75,7 +75,7 @@ la preuve de reprise par une transaction réelle plutôt que par un log.*
 | Pilier | Composants | Lien avec les autres |
 |---|---|---|
 | **DEV** | `payment-api`, `monero-crypto-core`, `front-dashboard` | le dashboard consomme SSE et `/score` ; l'API appelle le noyau Rust à chaque transaction |
-| **INFRA** | `docker compose`, `ansible/`, `prometheus`, `grafana`, `loki` | le moteur exécute un vrai playbook Ansible ; Prometheus scrape 9 services |
+| **INFRA** | `docker compose`, `ansible/`, `prometheus`, `alertmanager`, `loki`, `grafana` | le moteur exécute un vrai playbook Ansible ; Prometheus scrape 12 services et pousse ses alertes au moteur |
 | **IA/DATA** | `ml-detector` (scikit-learn + PyTorch) | publie l'incident au moteur ; expose le score au dashboard |
 | **CYBER** | `waf`, `shadow-api`, `auth-service`, `vault`, **`backoffice`** | le WAF déroute vers le honeypot ; Vault détient la clé JWT ; Ansible fait tourner cette clé ; le back-office contrôle l'accès au tableau de supervision |
 | **TRANSFORMATION** | `docs/GOUVERNANCE.md` | EBIOS RM et PCA/PRA reliés aux composants ci-dessus, pas à un schéma théorique |
@@ -469,14 +469,15 @@ intervention humaine.
 | `burst` (50 ms d'intervalle) | 40 transactions, 9,7 tx/s, aucune erreur |
 | `malformed` (anneau vide, clés invalides) | **400** propre, service toujours vivant |
 
-### 6.3 Tests automatisés — 151
+### 6.3 Tests automatisés — 159
 
 | Suite | Nombre | Ce qu'elle prouve |
 |---|---|---|
 | `remediation-engine` bus d'états | 7 | `seq` croissant, SSE, abonné lent non bloquant |
 | `remediation-engine` flux d'incident | 5 | ordre des états, verrou, échec explicite |
 | `ml-detector` | 12 | invariance au volume, purge de fenêtre, anti-rebond, réarmement |
-| `payment-api` | 13 | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés |
+| `payment-api` | 13 |
+| `payment-api` (registre) | **8** | journal PostgreSQL, rechargement, repli explicite, écriture groupée | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés |
 | `monero-crypto-core` (Rust) | 9 | Pedersen homomorphe, chiffrement réversible, anneau valide, falsifications rejetées |
 | `monero-crypto-core` (HTTP) | 10 | émission, dérivation, scan, audit, équilibre, bLSAG, rejeu |
 | `waf` | 10 | âge médian, routage honeypot, **client légitime jamais dérouté** |
@@ -496,7 +497,7 @@ intervention humaine.
 
 ### 6.4 Observabilité
 
-Prometheus scrape 11 cibles (toutes `up`), évalue 20 règles d'alerte, et les pousse à Alertmanager → remédiation. Grafana est
+Prometheus scrape 12 cibles (toutes `up`), évalue 24 règles d'alerte, et les pousse à Alertmanager → remédiation. Loki évalue 4 règles de **logs** et pousse au même Alertmanager. Grafana est
 provisionné (datasource + dashboard 10 panneaux) : aucun clic après `up -d`.
 
 Les alertes ciblent les **pannes silencieuses**, pas les attaques : une attaque
@@ -630,10 +631,10 @@ python tools/attack.py all
 
 | Élément | Valeur |
 |---|---|
-| Services | 10 (dont 1 en Rust) |
-| Conteneurs | 18 |
+| Services | 11 (dont 1 en Rust) |
+| Conteneurs | 19 |
 | Lignes de code (Python, Rust, JSX, C++, firmware) | ~13 300 |
 | Routes HTTP | ~100 (dont 13 en Rust, 21 back-office, 14 boutique) |
-| Tests automatisés | 151 |
+| Tests automatisés | 159 |
 | Fenêtres d'entraînement | 1 129 |
 | Durée de la chaîne P0 | 6,6 à 7,2 s (limite 90 s) |

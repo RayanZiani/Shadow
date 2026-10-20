@@ -51,6 +51,11 @@ from pydantic import BaseModel
 CRYPTO_CORE_URL = os.environ.get("CRYPTO_CORE_URL", "http://monero-crypto-core:8081")
 
 from svc_auth import require_service_token, service_token_configured  # noqa: E402
+from registry import RegistryStore  # noqa: E402
+
+# Journal d'écriture PostgreSQL : la mémoire reste la source de lecture
+# (latence du chemin critique), la base protège contre le redémarrage.
+REGISTRY = RegistryStore()
 
 
 def _service_headers() -> dict:
@@ -184,8 +189,13 @@ async def _mint(count: int, internal: bool = False, amount: int | None = None) -
         }
         if internal:
             output["internal"] = True
+        output["created_at"] = time.time()
         OUTPUTS[output["id"]] = output
         created.append(output["id"])
+    # Écriture groupée : un seul aller-retour pour N outputs. Si la base est
+    # tombée, `save_outputs` dégrade et `/healthz` le dit — on ne perd jamais
+    # un paiement à cause du journal.
+    REGISTRY.save_outputs([OUTPUTS[output_id] for output_id in created])
     return created
 
 
@@ -206,8 +216,34 @@ async def _replenish_pool() -> None:
         unspent += 200
 
 
+def _restore_registry() -> None:
+    """Recharge le registre depuis PostgreSQL. Appelé une fois au démarrage.
+
+    Sans cela, `docker compose restart payment-api` repartait d'un registre
+    vide : la transaction de preuve disparaissait et les clients recevaient des
+    409 en série. C'était le risque de démonstration n°1.
+    """
+    global _registry_seq
+    outputs, key_images, spent_ids, highest = REGISTRY.load()
+    if not outputs:
+        return
+    OUTPUTS.update(outputs)
+    spent_key_images.update(key_images)
+    spent_output_ids.update(spent_ids)
+    _registry_seq = max(_registry_seq, highest)
+    logging.getLogger("payment-api").info(
+        "registre rechargé : %d outputs, %d key images, %d dépensés",
+        len(outputs),
+        len(key_images),
+        len(spent_ids),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 1. Recharger ce qui existe déjà (redémarrage) — AVANT d'émettre, sinon
+    #    `_registry_seq` repart de zéro et écrase les identifiants existants.
+    _restore_registry()
     try:
         await _bootstrap_wallet()
         await _mint(INITIAL_OUTPUTS)
@@ -481,6 +517,7 @@ async def submit_tx(req: TxSubmitRequest):
 
     spent_key_images.add(signed["key_image_hex"])
     spent_output_ids.add(req.real_output_id)
+    REGISTRY.save_spent(req.real_output_id, signed["key_image_hex"], time.time())
 
     latency_ms = (time.perf_counter() - started) * 1000
     ages = [OUTPUTS[i]["age_days"] for i in decoy_ids]
@@ -831,6 +868,7 @@ def quarantine_outputs():
     quarantined = {o["id"] for o in suspects}
     for output_id in quarantined:
         OUTPUTS.pop(output_id, None)
+    REGISTRY.quarantine(sorted(quarantined))
     return {
         "status": "quarantined",
         "count": len(quarantined),
@@ -871,6 +909,9 @@ def metrics():
         "# HELP shadow_service_token_configured 1 si les endpoints d'administration sont ouverts",
         "# TYPE shadow_service_token_configured gauge",
         f"shadow_service_token_configured {1 if service_token_configured() else 0}",
+        "# HELP shadow_registry_durable 1 si le registre d'outputs survit a un redemarrage",
+        "# TYPE shadow_registry_durable gauge",
+        f"shadow_registry_durable {1 if REGISTRY.available else 0}",
     ]
     return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
@@ -890,4 +931,7 @@ def healthz():
         "pin_lockout_threshold": PIN_LOCKOUT_THRESHOLD,
         # Les endpoints /admin/* sont fermés si ce champ est false.
         "service_token_configured": service_token_configured(),
+        # `durable: false` = registre en mémoire : un redémarrage perd les
+        # outputs, donc la transaction de preuve. Publié, jamais silencieux.
+        "registry": REGISTRY.health(),
     }

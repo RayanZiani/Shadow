@@ -81,3 +81,9 @@ scrape_configs:
     static_configs:
       - targets: ["rag-assistant:8091"]
         labels: { service: rag-assistant, pilier: "IA/DATA" }
+
+  # --- Base de données ---------------------------------------------------
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels: { service: db-postgres, pilier: INFRA }

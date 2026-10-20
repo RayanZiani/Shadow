@@ -35,7 +35,7 @@ historique — avec un back d'administration, un **assistant RAG** local et une
 | `hardware/bridge` | Pont SSE → USB, reconnexion, mode répétition | 9 tests + `--dry-run` |
 | `hardware/ring_signer_hsm` | Firmware ESP32, 5 états, parseur de trame | à flasher |
 | `hardware/led_bandeau_esp8266` | Firmware **ESP8266** (CLion + PlatformIO), LED bicolore pilotée par le back-office | compile (35 % RAM, 28 % flash), à flasher |
-| Observabilité | Prometheus (11 services scrapés, 20 alertes) + **Alertmanager → remédiation** + Grafana | `localhost:3001` |
+| Observabilité | Prometheus (12 services scrapés, 24 alertes) + **Loki** (logs) + **Alertmanager → remédiation** + Grafana | `localhost:3001` |
 
 **Chaîne P0 mesurée sur Docker** : attaque → détection → remédiation →
 transaction de preuve → déception active en **6,5 à 7,0 s** (limite 90 s,
@@ -62,7 +62,7 @@ Guide complet (Docker, Rust, Python, Node, Vault, dépannage) :
 python tools/init_env.py   # génère .env avec des secrets ALÉATOIRES
 docker compose build       # ~6-8 min la première fois (torch, cargo)
 docker compose up -d
-docker compose ps          # 18 services, tous Up / healthy
+docker compose ps          # 19 services, tous Up / healthy
 ```
 
 `tools/init_env.py` est **obligatoire** : il génère `SERVICE_TOKEN`,
@@ -215,7 +215,7 @@ python3 -m venv .venv
 ./tools/run_tests.sh
 ```
 
-**151 tests** : bus d'états, incident et SIEM (20), détecteur ML (12), API de
+**159 tests** : bus d'états, incident et SIEM (20), détecteur ML (12), API de
 paiement (13), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
 (9), honeypot (4), auth-service (9), **back-office (25)**, **boutique (18)**,
 **assistant RAG (12)**.

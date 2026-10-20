@@ -1,7 +1,7 @@
 # TODO — ce qui reste à faire
 
-> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (151 tests verts,
-> chaîne P0 en 6,6-7,2 s, 18 services `Up`).
+> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (159 tests verts,
+> chaîne P0 en 6,6-7,2 s, 19 services `Up`).
 > **Mise à jour du 20/10 (soir)** : les nouvelles règles du jury changent le
 > périmètre — boutique en base, front vitrine, back d'administration, paiement
 > réel avec historique, RAG, ingestion SIEM. **Livré** : voir §0.5. Ce qui
@@ -243,60 +243,73 @@ parle d'« accès du moteur de remédiation maîtrisés » (Axe 2).
 **Acceptation** : `ansible-playbook` réussit sans `VAULT_TOKEN` ; la tâche
 AppRole n'est plus `skipped` ; `auth-service /healthz` → `jwt_key_source: vault`.
 
-### 1.3 Registre persistant (PostgreSQL) — L
+### 1.3 Registre persistant (PostgreSQL) — fait
 
-**Pourquoi** : `OUTPUTS` est en mémoire. Un redémarrage de `payment-api` en
-pleine démo efface le registre, donc la transaction de preuve.
+`services/payment-api/registry.py` : journal d'écriture PostgreSQL ; la mémoire
+reste la source de lecture (latence du chemin critique). Tables `outputs` et
+`key_images`, `CREATE TABLE IF NOT EXISTS` au démarrage, rechargement au
+démarrage **avant** toute émission — sinon `_registry_seq` repart de zéro et
+écrase `output_1`. 8 tests dédiés.
 
-**Où** : `services/payment-api/main.py`, `docker-compose.yml`.
+Repli **explicite** : sans `DATABASE_URL`, le registre reste en mémoire et
+`/healthz` publie `registry.durable: false`, avec l'alerte
+`RegistreNonPersistant`. Un registre non persistant silencieux serait exactement
+la panne qu'on cherche à supprimer.
 
-- table `outputs(id, age_days, one_time_public_key, tx_public_key,
-  encrypted_amount, internal, spent_at)` ;
-- table `key_images(key_image PRIMARY KEY, spent_at)` ;
-- migration au démarrage (`CREATE TABLE IF NOT EXISTS`) ;
-- `db-postgres` est déjà dans la stack et `DATABASE_URL` est déjà passé.
+Reste à vérifier sur la pile démarrée :
 
-**Acceptation** :
-- `docker compose restart payment-api` conserve les outputs et les key images ;
-- un rejeu après redémarrage renvoie toujours 409 ;
-- les 10 tests de `test_payment_api.py` passent avec un backend PostgreSQL
-  (fixture de test sur une base éphémère).
+- [ ] **Redémarrage réel** — S
+  Acheter un article, puis `docker compose restart payment-api`.
+  **Acceptation** : `/healthz` → `registry.durable: true` et `outputs` > 0 ;
+  l'historique de la boutique est intact ; un rejeu renvoie toujours 409.
 
-**Effort réel** : la logique métier ne change pas, seul le stockage. Attention à
-`_replenish_pool()` qui parcourt tous les outputs : passer en `COUNT(*)`.
+- [ ] **Mesurer `_replenish_pool()`** — S
+  Il parcourt tous les outputs à chaque `/outputs?unspent=true`. Négligeable à
+  500 outputs, pas à 50 000.
+  **Acceptation** : passer en `COUNT(*)` SQL si la mesure dépasse 20 ms.
 
-### 1.4 RAG Ollama — L
+### 1.4 RAG Ollama — fait (socle)
 
-**Pourquoi** : le sujet demande un assistant RAG local (Ollama + LangChain,
-modèle ≤ 8 Md de paramètres). Le pilier IA/DATA n'est couvert que par le ML.
+`services/rag-assistant` (8091) : index **BM25** construit à la construction de
+l'image sur `docs/` + `README.md` + `TODO.md` (13 documents, ~370 passages),
+`POST /ask` avec sources citées, 12 tests.
 
-**Où** : `services/rag-assistant/` (à créer).
+**Écart assumé** : pas de base vectorielle (Chroma/FAISS) ni de LangChain.
+BM25 donne la même qualité sur un corpus de 13 documents, sans modèle à
+télécharger au build ni dépendance lourde. C'est écrit dans
+`services/rag-assistant/rag.py`.
 
-- indexer `docs/*.md` + `README.md` dans une base vectorielle légère
-  (Chroma ou FAISS) ;
-- modèle `llama3.1:8b` ou `mistral:7b` via Ollama ;
-- endpoint `POST /ask` avec les sources citées ;
-- quadrant « Assistant » dans le dashboard (optionnel).
+**Acceptation remplie** : la question de référence répond « 6,6 à 7,2
+secondes » **en citant** `docs/RAPPORT.md`, et c'est vérifié par un test
+(`test_la_reponse_donne_la_duree_et_cite_le_rapport`).
 
-**Acceptation** :
-- `curl -X POST localhost:8091/ask -d '{"q":"combien de temps prend la reprise ?"}'`
-  répond « 6,6 à 7,2 s » **en citant** `docs/RAPPORT.md` ;
-- l'indexation se fait au build de l'image, jamais au runtime ;
-- le service est `optional` dans le compose : son absence ne casse rien.
+Reste :
+
+- [ ] **Faire tourner Ollama sur le PC IA** — M
+  `ollama pull llama3.1:8b`, puis `OLLAMA_URL=http://<pc-ia>:11434`.
+  **Acceptation** : `/ask` renvoie `engine: ollama:llama3.1:8b` et une réponse
+  rédigée citant `docs/RAPPORT.md`. Sans lui, le mode extractif reste actif.
+
+- [ ] **Quadrant « Assistant » dans le dashboard** — S
+  Un champ de question + la réponse + les sources, dans un 5ᵉ quadrant.
+  **Acceptation** : la question de référence se pose depuis le dashboard.
 
 ---
 
 ## 2. Priorité moyenne — qualité et crédibilité
 
-### 2.1 Métriques PostgreSQL — S
+### 2.1 Métriques PostgreSQL — fait
 
-`db-postgres` n'est pas scrapé : le service tourne mais n'expose aucune métrique
-(aucun `postgres_exporter`). PostgreSQL n'est utilisé par aucun service
-aujourd'hui (le registre est en mémoire), donc ce n'est pas urgent — mais si
-1.3 est fait, ces métriques deviennent utiles.
+`postgres-exporter` ajouté (9187), 12ᵉ cible Prometheus, **3 alertes** :
+`BaseDeDonneesIndisponible`, `PoolPostgresSature`, `BasePostgresVolumineuse`.
+Ce n'était plus optionnel : PostgreSQL porte désormais les commandes, les
+paiements et le registre d'outputs.
 
-**Acceptation** : `prometheus-community/postgres_exporter` ajouté, cible `up`,
-dashboard Grafana avec connexions et taille de base.
+Reste :
+
+- [ ] **Panneaux Grafana « base de données »** — S
+  Connexions actives, taille de la base, requêtes lentes.
+  **Acceptation** : trois panneaux ajoutés au dashboard provisionné.
 
 ### 2.2 Loki / Promtail — fait
 

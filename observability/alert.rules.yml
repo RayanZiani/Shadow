@@ -198,6 +198,54 @@ groups:
             `python tools/init_env.py` puis `docker compose up -d`. Sans jeton,
             /admin/* et /incident répondent 503 : aucune remédiation autonome.
 
+      # Le registre d'outputs est retombé en mémoire : un redémarrage de
+      # payment-api effacerait la transaction de preuve. C'était le risque de
+      # démonstration n°1 ; il est désormais visible au lieu d'être silencieux.
+      - alert: RegistreNonPersistant
+        expr: shadow_registry_durable == 0
+        for: 1m
+        labels: { severity: critical, pilier: DEV }
+        annotations:
+          summary: "le registre d'outputs n'est pas persistant"
+          description: >-
+            `/healthz` → `registry.durable: false`. Vérifier `DATABASE_URL` et
+            `db-postgres` : sans persistance, un redémarrage perd les outputs
+            et donc la transaction de preuve.
+
+      # La base est tombée : plus de boutique, plus de registre persistant.
+      - alert: BaseDeDonneesIndisponible
+        expr: pg_up == 0
+        for: 30s
+        labels: { severity: critical, pilier: INFRA }
+        annotations:
+          summary: "PostgreSQL ne répond plus"
+          description: >-
+            `docker compose up -d db-postgres`. Conséquence : la boutique ne
+            peut plus vendre et le registre retombe en mémoire.
+
+      # Trop de connexions ouvertes : le pool est saturé, les requêtes vont
+      # expirer. Se voit AVANT la panne, ce qui est tout l'intérêt.
+      - alert: PoolPostgresSature
+        expr: sum(pg_stat_activity_count) > 80
+        for: 2m
+        labels: { severity: warning, pilier: INFRA }
+        annotations:
+          summary: "{{ $value }} connexions PostgreSQL ouvertes"
+          description: >-
+            Vérifier les fuites de connexion dans `shop-api` et `payment-api`
+            (`pg_stat_activity`). La limite par défaut est 100.
+
+      # La base grossit : signe d'un journal non purgé ou d'un import massif.
+      - alert: BasePostgresVolumineuse
+        expr: pg_database_size_bytes{datname="shadow_settle"} > 2e9
+        for: 5m
+        labels: { severity: warning, pilier: INFRA }
+        annotations:
+          summary: "la base dépasse 2 Go"
+          description: >-
+            `SELECT relname, pg_size_pretty(pg_total_relation_size(relid)) FROM
+            pg_catalog.pg_statio_user_tables ORDER BY 2 DESC;`
+
       # La boutique est le point d'entrée « client » du SI. Si elle tombe, il
       # n'y a plus de site vitrine ni de paiement.
       - alert: BoutiqueIndisponible
