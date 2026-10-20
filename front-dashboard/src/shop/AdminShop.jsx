@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { shop } from "./api.js";
+import ProductImage from "./ProductImage.jsx";
 
 /**
  * Administration de la boutique — articles et commandes.
@@ -188,6 +189,7 @@ export default function AdminShop() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-ink/60 text-[11px] uppercase">
+              <th className="pb-1">image</th>
               <th className="pb-1">SKU</th>
               <th className="pb-1">nom</th>
               <th className="pb-1">prix</th>
@@ -199,6 +201,15 @@ export default function AdminShop() {
           <tbody>
             {products.map((product) => (
               <tr key={product.id} className="border-t border-rule/50">
+                <td className="py-2 pr-2">
+                  <ProductImage
+                    imageUrl={product.image_url}
+                    sku={product.sku}
+                    alt={product.name}
+                    className="w-10 h-10 rounded"
+                    labelClassName="text-page/90 font-mono text-[9px]"
+                  />
+                </td>
                 <td className="py-2 font-mono text-[12px] text-ink/70">{product.sku}</td>
                 <td className="py-2 text-ink font-bold">{product.name}</td>
                 <td className="py-2 tabular-nums">{product.price}</td>

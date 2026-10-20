@@ -172,6 +172,10 @@ services:
       ML_DETECTOR_URL: "http://ml-detector:8083"
       REMEDIATION_STATE_URL: "http://remediation-engine:8084/state/report"
       SERVICE_TOKEN: ${SERVICE_TOKEN:-}
+      # PIN du terminal physique. Sans cette variable, le service en tire un au
+      # hasard à chaque démarrage : le présentateur ne pourrait pas le taper.
+      # `tools/init_env.py` le génère dans `.env`.
+      TERMINAL_PIN: ${TERMINAL_PIN:-}
     depends_on:
       db-postgres:
         condition: service_healthy

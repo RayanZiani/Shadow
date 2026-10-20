@@ -257,12 +257,23 @@ class Database:
         rows = self.query(sql, params)
         return rows[0] if rows else None
 
-    def run(self, sql: str, params: Sequence = ()) -> int | None:
-        """Exécute une écriture ; retourne l'`id` si `RETURNING id` est présent."""
+    def run(
+        self, sql: str, params: Sequence = (), *, returning: bool = False
+    ) -> int | None:
+        """Exécute une écriture ; retourne l'`id` si `returning=True`.
+
+        Le drapeau est **explicite** : l'ancienne heuristique
+        `"RETURNING" in sql.upper()` se déclenchait aussi sur le mot présent
+        dans un commentaire ou une chaîne, et imposait de relire le SQL pour
+        savoir si un appelant attendait un identifiant. Ici, le contrat est
+        dans la signature : `returning=True` pour un `INSERT ... RETURNING id`,
+        rien sinon. Les `INSERT` transactionnels gardent `tx_insert()`, qui
+        refuse déjà un `INSERT` sans `RETURNING`.
+        """
         with self._lock:
             cursor = self._cursor(self._conn)
             cursor.execute(self._adapt(sql), tuple(params))
-            if "RETURNING" in sql.upper():
+            if returning:
                 row = cursor.fetchone()
                 if row is None:
                     return None

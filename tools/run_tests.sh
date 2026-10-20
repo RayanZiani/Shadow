@@ -17,6 +17,12 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="${PYTHON:-$ROOT/.venv/bin/python}"
+# Fallback Windows / Git Bash : un venv créé par `python.exe` n'a pas
+# `.venv/bin/python` mais `.venv/Scripts/python.exe`. On ne l'utilise que si
+# l'appelant n'a pas imposé son propre interpréteur via PYTHON.
+if [[ -z "${PYTHON:-}" && ! -x "$PY" && -x "$ROOT/.venv/Scripts/python.exe" ]]; then
+  PY="$ROOT/.venv/Scripts/python.exe"
+fi
 FAILED=()
 PASSED=()
 
@@ -68,6 +74,8 @@ run "hardware (contrat série)" \
   bash -c "cd '$ROOT/hardware/bridge' && '$PY' -m pytest test_hardware_bridge.py -q"
 run "encodage des fichiers livrés (aucun mojibake)" \
   bash -c "cd '$ROOT' && '$PY' tools/check_encoding.py"
+run "cohérence statique de la pile (compose, volumes, tables)" \
+  bash -c "cd '$ROOT' && '$PY' tools/check_compose.py"
 
 if command -v cargo >/dev/null 2>&1; then
   run "monero-crypto-core (Rust, unitaires)" \

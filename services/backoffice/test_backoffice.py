@@ -20,6 +20,8 @@ import json
 import os
 import pathlib
 import sys
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,6 +45,74 @@ for _name in ("main", "config", "db", "faces", "led", "security"):
 import main  # noqa: E402  (import volontairement après l'isolation)
 from config import Config  # noqa: E402
 from db import Database  # noqa: E402
+from security import hash_token  # noqa: E402
+
+
+def _connectable_admins(db) -> int:
+    """Admins réellement capables de se connecter : actifs ET visage enrôlé."""
+    return int(
+        db.scalar(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND active=1 "
+            "AND face_embedding IS NOT NULL"
+        )
+        or 0
+    )
+
+
+def _session_for(app, username: str) -> str:
+    """Ouvre une session sans passer par le visage.
+
+    Utilisé par le test de concurrence : l'acteur de la course doit rester
+    administrateur pendant que les deux cibles sont rétrogradées. S'il était
+    lui-même l'une des cibles, le perdant recevrait 403 (son propre rôle aurait
+    déjà changé) au lieu du 409 attendu. Le parcours d'authentification complet
+    est couvert par les autres tests.
+    """
+    token = f"jeton-de-test-{username}"
+    user = app.state.db.one("SELECT id FROM users WHERE username = ?", (username,))
+    assert user is not None
+    now = time.time()
+    app.state.db.run(
+        "INSERT INTO sessions(token_hash, user_id, created_at, expires_at, last_seen) "
+        "VALUES(?,?,?,?,?)",
+        (hash_token(token), user["id"], now, now + 3600, now),
+    )
+    return token
+
+
+def _admin_sans_visage(client, headers, username: str = "carol") -> dict:
+    created = client.post(
+        "/admin/users",
+        json={
+            "username": username,
+            "password": f"mot-de-passe-{username}",
+            "role": "admin",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["user"]
+
+
+def _admin_avec_visage(client, headers, username: str) -> dict:
+    created = client.post(
+        "/admin/users",
+        json={
+            "username": username,
+            "password": f"mot-de-passe-{username}",
+            "role": "admin",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    user = created.json()["user"]
+    enrolled = client.post(
+        f"/admin/users/{user['id']}/face",
+        json={"image_b64": face(username)},
+        headers=headers,
+    )
+    assert enrolled.status_code == 200, enrolled.text
+    return user
 
 
 def face(name: str) -> str:
@@ -352,6 +422,154 @@ def test_le_dernier_admin_ne_peut_pas_etre_desactive(client, admin):
     response = client.delete(f"/admin/users/{admin['id']}", headers=headers)
     assert response.status_code == 409
     assert response.json()["detail"]["reason"] == "last_admin"
+
+
+# ---------------------------------------------------------------------------
+# Garde « dernier administrateur » — atomicité et admins sans visage
+# (TODO §0.6.5)
+# ---------------------------------------------------------------------------
+def test_deux_patch_concurrents_un_seul_admin_connectable_survit(
+    app, client, admin, monkeypatch
+):
+    """Deux PATCH simultanés ne peuvent pas retirer les deux derniers admins.
+
+    Chaque requête part sur SA propre connexion SQLite (deux applications sur
+    le même fichier) : c'est la transaction `BEGIN IMMEDIATE` qui sérialise la
+    garde et l'écriture, pas le verrou d'une connexion unique.
+    """
+    # Rend la course déterministe : la lecture « combien d'admins connectables »
+    # est piégée pour attendre que les DEUX requêtes y arrivent. Dans l'ancienne
+    # version (garde hors transaction), les deux lisent 2 et passent toutes les
+    # deux. Avec la transaction, la seconde requête est bloquée sur
+    # `BEGIN IMMEDIATE` et ne lit qu'après le commit de la première : le piège
+    # expire seul (timeout) et le 409 tombe.
+    vrai_scalar = Database.scalar
+    piege: dict = {"barriere": None}
+
+    def scalar_piege(self, sql, params=()):
+        barriere = piege["barriere"]
+        if barriere is not None and "face_embedding IS NOT NULL" in sql:
+            try:
+                barriere.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                pass
+        return vrai_scalar(self, sql, params)
+
+    monkeypatch.setattr(Database, "scalar", scalar_piege)
+
+    session = login(client).json()["access_token"]
+    headers = {"Authorization": f"Bearer {session}"}
+    bob = _admin_avec_visage(client, headers, "bob")
+    assert _connectable_admins(app.state.db) == 2
+
+    # Acteur de la course : un admin SANS visage, donc jamais compté dans la
+    # garde et jamais rétrogradé ici.
+    carol = _admin_sans_visage(client, headers, "carol")
+    actor_headers = {"Authorization": f"Bearer {_session_for(app, carol['username'])}"}
+
+    app_a = main.create_app(app.state.cfg)
+    app_b = main.create_app(app.state.cfg)
+    with TestClient(app_a) as client_a, TestClient(app_b) as client_b:
+        start = threading.Barrier(2)
+        piege["barriere"] = threading.Barrier(2)
+        results: dict[str, tuple[int, dict | None]] = {}
+
+        def demote(target_client, target_id: int, key: str) -> None:
+            start.wait(timeout=10)
+            response = target_client.patch(
+                f"/admin/users/{target_id}",
+                json={"role": "operator"},
+                headers=actor_headers,
+            )
+            results[key] = (response.status_code, response.json().get("detail"))
+
+        threads = [
+            threading.Thread(target=demote, args=(client_a, admin["id"], "alice")),
+            threading.Thread(target=demote, args=(client_b, bob["id"], "bob")),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        piege["barriere"] = None
+        assert not any(thread.is_alive() for thread in threads)
+
+    codes = sorted(code for code, _ in results.values())
+    assert codes == [200, 409], results
+    refus = next(detail for code, detail in results.values() if code == 409)
+    assert refus["reason"] == "last_admin"
+    assert "visage" in refus["message"]
+
+    # Exactement un admin connectable survit : jamais zéro.
+    assert _connectable_admins(app.state.db) == 1
+    # L'acteur sans visage est resté admin : il n'a jamais protégé personne.
+    assert (
+        app.state.db.scalar(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND active=1"
+        )
+        == 2
+    )
+
+
+def test_un_admin_sans_visage_ne_compte_pas_dans_la_garde(app, client, admin):
+    """Un admin sans visage ne peut pas se connecter : le rétrograder est permis.
+
+    La garde ne doit pas se transformer en blocage : elle protège l'accès au
+    back-office, pas le titre d'administrateur.
+    """
+    session = login(client).json()["access_token"]
+    headers = {"Authorization": f"Bearer {session}"}
+    carol = _admin_sans_visage(client, headers, "carol")
+    assert _connectable_admins(app.state.db) == 1
+
+    response = client.patch(
+        f"/admin/users/{carol['id']}", json={"role": "operator"}, headers=headers
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["role"] == "operator"
+
+
+def test_le_dernier_admin_avec_visage_ne_peut_pas_etre_desactive(app, client, admin):
+    """Il y a 2 admins actifs, mais un seul peut se connecter : on refuse."""
+    session = login(client).json()["access_token"]
+    headers = {"Authorization": f"Bearer {session}"}
+    _admin_sans_visage(client, headers, "carol")
+
+    for payload in ({"active": False}, {"role": "operator"}):
+        response = client.patch(
+            f"/admin/users/{admin['id']}", json=payload, headers=headers
+        )
+        assert response.status_code == 409, response.text
+        detail = response.json()["detail"]
+        assert detail["reason"] == "last_admin"
+        assert "visage" in detail["message"]
+
+    deleted = client.delete(f"/admin/users/{admin['id']}", headers=headers)
+    assert deleted.status_code == 409
+    assert deleted.json()["detail"]["reason"] == "last_admin"
+
+    # Rien n'a bougé : alice est toujours admin active, avec son visage.
+    row = app.state.db.one("SELECT * FROM users WHERE id = ?", (admin["id"],))
+    assert row["role"] == "admin"
+    assert row["active"] == 1
+    assert row["face_embedding"] is not None
+
+
+def test_le_visage_du_dernier_admin_connectable_ne_peut_pas_etre_retire(client, admin):
+    """Retirer le visage du dernier admin connectable équivaut à le désactiver."""
+    session = login(client).json()["access_token"]
+    headers = {"Authorization": f"Bearer {session}"}
+    _admin_sans_visage(client, headers, "carol")
+
+    refused = client.delete(f"/admin/users/{admin['id']}/face", headers=headers)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["reason"] == "last_admin"
+
+    # Avec un second admin connectable, le retrait redevient possible.
+    bob = _admin_avec_visage(client, headers, "bob")
+    allowed = client.delete(f"/admin/users/{bob['id']}/face", headers=headers)
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["face_enrolled"] is False
 
 
 def test_la_deconnexion_revoque_la_session(client, admin):

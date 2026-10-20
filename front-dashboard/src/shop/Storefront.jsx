@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ShopError, shop } from "./api.js";
+import ProductImage from "./ProductImage.jsx";
 
 /**
  * Boutique — site vitrine public.
@@ -53,9 +54,12 @@ function ProductCard({ product, onAdd, busy }) {
   const disabled = !product.in_stock || busy;
   return (
     <article className="bg-white/80 rounded-xl p-4 border border-rule flex flex-col">
-      <div className="h-24 rounded-lg bg-gradient-to-br from-ink/80 to-ink/40 mb-3 flex items-center justify-center">
-        <span className="text-page/90 font-mono text-xs tracking-widest">{product.sku}</span>
-      </div>
+      <ProductImage
+        imageUrl={product.image_url}
+        sku={product.sku}
+        alt={product.name}
+        className="h-24 rounded-lg mb-3"
+      />
       <h3 className="text-ink font-bold leading-tight">{product.name}</h3>
       <p className="text-ink/60 text-xs mt-1 flex-1">{product.description}</p>
       <div className="flex items-center justify-between mt-3">
@@ -77,7 +81,7 @@ function ProductCard({ product, onAdd, busy }) {
   );
 }
 
-function CartPanel({ cart, onQuantity, onRemove, onCheckout, busy, error }) {
+function CartPanel({ cart, catalog, onQuantity, onRemove, onCheckout, busy, error }) {
   return (
     <aside className="bg-card rounded-xl p-4 h-fit sticky top-4">
       <h2 className="text-ink font-bold mb-3">Panier</h2>
@@ -88,6 +92,15 @@ function CartPanel({ cart, onQuantity, onRemove, onCheckout, busy, error }) {
           <ul className="space-y-2">
             {cart.items.map((item) => (
               <li key={item.product_id} className="flex items-start gap-2">
+                {/* Le panier ne renvoie pas `image_url` : on la reprend du
+                    catalogue chargé, par SKU. */}
+                <ProductImage
+                  imageUrl={item.image_url ?? catalog?.[item.sku]?.image_url}
+                  sku={item.sku}
+                  alt={item.name}
+                  className="w-10 h-10 rounded shrink-0"
+                  labelClassName="text-page/90 font-mono text-[9px]"
+                />
                 <div className="flex-1">
                   <p className="text-ink text-sm font-bold leading-tight">{item.name}</p>
                   <p className="text-ink/60 text-[11px]">
@@ -190,6 +203,12 @@ export default function Storefront({ user, onLogin, onSupervision, onAdmin, onLo
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const customerRef = useMemo(readCustomer, []);
+  // Index du catalogue par SKU : le panier ne transporte que le SKU, pas
+  // `image_url` — on la retrouve ici pour la vignette.
+  const catalogBySku = useMemo(
+    () => Object.fromEntries(products.map((product) => [product.sku, product])),
+    [products]
+  );
 
   const loadOrders = useCallback(async () => {
     try {
@@ -386,6 +405,7 @@ export default function Storefront({ user, onLogin, onSupervision, onAdmin, onLo
         <div className="space-y-4">
           <CartPanel
             cart={cart}
+            catalog={catalogBySku}
             onQuantity={changeQuantity}
             onRemove={removeItem}
             onCheckout={checkout}

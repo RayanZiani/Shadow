@@ -39,14 +39,16 @@ import os
 import random
 import secrets
 import logging
+import threading
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 CRYPTO_CORE_URL = os.environ.get("CRYPTO_CORE_URL", "http://monero-crypto-core:8081")
 
@@ -89,6 +91,25 @@ if not PIN_CODE:
 INITIAL_OUTPUTS = int(os.environ.get("INITIAL_OUTPUTS", "500"))
 MIN_UNSPENT = int(os.environ.get("MIN_UNSPENT_OUTPUTS", "250"))
 
+# La sonde émet un output interne toutes les 4 s (~21 600/jour). On n'en garde
+# que les N derniers : au-delà, le dictionnaire grossissait sans fin et
+# `/metrics` ralentissait avec lui.
+PROBE_OUTPUT_RETENTION = int(os.environ.get("PROBE_OUTPUT_RETENTION", "64"))
+
+
+def _env_float(name: str, default: float = 0.0) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+# Limite de débit de `/tx/pay`, en requêtes/seconde et par IP.
+# 0 ou absent = DÉSACTIVÉ : les mesures de charge (`tools/load_test.py`) ne
+# doivent pas être faussées par un limiteur activé par défaut.
+TX_PAY_RATE_LIMIT = _env_float("TX_PAY_RATE_LIMIT", 0.0)
+TX_PAY_RATE_WINDOW = 1.0
+
 # --- Portefeuille de démonstration -----------------------------------------
 # `None` => généré au démarrage (aléatoire). Fixer les deux variables rejoue
 # exactement la même démonstration, ce qui est utile pour le Clip Chrono.
@@ -108,6 +129,10 @@ CRYPTO_STATUS = {"ready": False, "last_error": None}
 # encrypted_amount_hex, internal (sonde uniquement).
 random.seed(1337)
 OUTPUTS: dict[str, dict] = {}
+# Protège OUTPUTS : les routes synchrones s'exécutent dans le threadpool
+# pendant que `_mint` (boucle d'événements) le mute. Toute lecture multiple
+# passe par `_snapshot_outputs()`, toute mutation par ce verrou.
+_outputs_lock = threading.Lock()
 _registry_seq = 0
 
 spent_key_images: set[str] = set()
@@ -127,9 +152,51 @@ spent_output_ids: set[str] = set()
 auto_probe_status = {"last_run": None, "ok": True}
 LAST_TX: dict | None = None
 
+# Outputs internes de la sonde encore présents (bornés à PROBE_OUTPUT_RETENTION).
+_probe_outputs: deque[str] = deque()
+
+# Idempotence de `/tx/pay` : référence -> résultat déjà émis. La mémoire reste
+# la source de lecture ; PostgreSQL (table `registry_payments`) protège du redémarrage.
+PAYMENTS: dict[str, dict] = {}
+# Borne mémoire : au-delà, les plus anciennes références sont oubliées et un
+# rejeu est résolu par le journal PostgreSQL (`load_payment`).
+PAYMENTS_MEMORY_MAX = int(os.environ.get("PAYMENTS_MEMORY_MAX", "10000"))
+_payment_order: deque[str] = deque()
+_payment_locks: dict[str, asyncio.Lock] = {}
+_payment_locks_guard = asyncio.Lock()
+
+# Limiteur de débit de `/tx/pay` : fenêtre glissante d'une seconde par IP.
+_tx_pay_hits: dict[str, deque[float]] = {}
+_tx_pay_hits_lock = threading.Lock()
+
+
+def _snapshot_outputs() -> list[dict]:
+    """Copie atomique des outputs — SEULE façon d'itérer le registre.
+
+    `/metrics`, `/decoys` et `/outputs` s'exécutent dans le threadpool pendant
+    que `_mint` mute le dictionnaire depuis la boucle : itérer directement
+    pouvait lever `RuntimeError: dictionary changed size during iteration`
+    (scrape Prometheus + sonde toutes les 4 s). On copie sous verrou, puis on
+    itère la copie.
+    """
+    with _outputs_lock:
+        return list(OUTPUTS.values())
+
+
+def _count_unspent() -> int:
+    """Outputs publics (hors sonde) encore dépensables."""
+    return sum(
+        1
+        for output in _snapshot_outputs()
+        if output["id"] not in spent_output_ids and not output.get("internal")
+    )
+
 # --- Compteurs d'observations ----------------------------------------------
 pin_attempts: deque[float] = deque(maxlen=500)
 pin_failures: deque[float] = deque(maxlen=500)
+# `/pin/stats` lit ces deques depuis le threadpool pendant que `verify_pin` les
+# mute : sans verrou, l'itération peut lever `deque mutated during iteration`.
+_pin_lock = threading.Lock()
 PIN_WINDOW_SECONDS = 30.0
 
 
@@ -209,6 +276,7 @@ async def _mint(count: int, internal: bool = False, amount: int | None = None) -
         payload["amount"] = amount
     minted = await _crypto("/crypto/mint-outputs", payload)
     created: list[str] = []
+    new_outputs: dict[str, dict] = {}
     for item in minted["outputs"]:
         _registry_seq += 1
         output = {
@@ -219,12 +287,16 @@ async def _mint(count: int, internal: bool = False, amount: int | None = None) -
         if internal:
             output["internal"] = True
         output["created_at"] = time.time()
-        OUTPUTS[output["id"]] = output
+        new_outputs[output["id"]] = output
         created.append(output["id"])
+    # Mutation sous verrou : un snapshot concurrent ne voit jamais un état
+    # à moitié écrit.
+    with _outputs_lock:
+        OUTPUTS.update(new_outputs)
     # Écriture groupée : un seul aller-retour pour N outputs. Si la base est
     # tombée, `save_outputs` dégrade et `/healthz` le dit — on ne perd jamais
     # un paiement à cause du journal.
-    REGISTRY.save_outputs([OUTPUTS[output_id] for output_id in created])
+    REGISTRY.save_outputs([new_outputs[output_id] for output_id in created])
     return created
 
 
@@ -235,14 +307,35 @@ async def _replenish_pool() -> None:
     clients recevaient des 409 en série — ce qui ressemble à une attaque
     permanente. Constaté en recette.
     """
-    unspent = sum(
-        1
-        for o in OUTPUTS.values()
-        if o["id"] not in spent_output_ids and not o.get("internal")
-    )
+    unspent = _count_unspent()
     while unspent < MIN_UNSPENT:
-        await _mint(200)
-        unspent += 200
+        created = await _mint(200)
+        if not created:
+            # Portefeuille non prêt : sans cette garde, la boucle serait infinie.
+            return
+        unspent += len(created)
+
+
+# Un seul réapprovisionnement à la fois : deux `/decoys` concurrents doublaient
+# sinon l'émission (et la charge sur le noyau).
+_pool_lock = asyncio.Lock()
+
+
+async def _ensure_pool() -> None:
+    """Réapprovisionne SEULEMENT si le pool utile est sous le seuil.
+
+    `quarantine_outputs` retire 25 outputs par incident. `_replenish_pool`
+    n'était appelé que par `/outputs?unspent=true` : après une vingtaine
+    d'incidents, `/decoys` ne trouvait plus de leurres et `/tx/pay` répondait
+    502 en boucle. On répare donc depuis les chemins qui en ont besoin.
+    """
+    if _count_unspent() >= MIN_UNSPENT:
+        return
+    async with _pool_lock:
+        # Re-test sous verrou : un autre appel a pu réapprovisionner entre-temps.
+        if _count_unspent() >= MIN_UNSPENT:
+            return
+        await _replenish_pool()
 
 
 def _restore_registry() -> None:
@@ -257,10 +350,21 @@ def _restore_registry() -> None:
     # Chaque partie est restaurée indépendamment : une base dont tous les
     # outputs ont été mis en quarantaine doit quand même conserver ses key
     # images, sinon la protection anti-double-dépense repart en arrière.
-    OUTPUTS.update(outputs)
+    with _outputs_lock:
+        OUTPUTS.update(outputs)
     spent_key_images.update(key_images)
     spent_output_ids.update(spent_ids)
     _registry_seq = max(_registry_seq, highest)
+    # Les outputs internes restaurés comptent dans la borne de la sonde :
+    # sinon chaque redémarrage en rajoutait jusqu'à PROBE_OUTPUT_RETENTION.
+    # Les excédents laissés par les versions précédentes sont purgés tout de
+    # suite (mémoire + journal), sans attendre 21 600 cycles de sonde.
+    internes = [output["id"] for output in outputs.values() if output.get("internal")]
+    internes.sort(key=_probe_order)
+    keep = max(PROBE_OUTPUT_RETENTION, 1)
+    _probe_outputs.clear()
+    _probe_outputs.extend(internes[-keep:])
+    _forget_probe_outputs(internes[:-keep])
     if not outputs and not key_images:
         return
     logging.getLogger("payment-api").info(
@@ -317,10 +421,14 @@ async def list_outputs(limit: int = 500, unspent: bool = False):
     réel. Sans ce filtre, tout client retombe sur une key image déjà dépensée
     et déclenche l'anti-double-dépense (faux positif d'attaque).
     """
-    outputs = list(OUTPUTS.values())
+    outputs = _snapshot_outputs()
     if unspent:
-        await _replenish_pool()
-        outputs = [o for o in OUTPUTS.values() if o["id"] not in spent_output_ids]
+        await _ensure_pool()
+        outputs = [
+            output
+            for output in _snapshot_outputs()
+            if output["id"] not in spent_output_ids
+        ]
     # Les outputs internes (sonde) ne sont pas des leurres candidats : les
     # exposer laisserait un attaquant reconstruire un anneau entièrement
     # composé de nos propres sondes.
@@ -364,7 +472,7 @@ def _gamma_weights(ages: list[float], shape: float = 2.0, scale: float = 1.6) ->
 
 
 @app.get("/decoys")
-def get_decoys(count: int | None = None):
+async def get_decoys(count: int | None = None):
     """Tire les leurres selon une gamma sur l'âge (biais récents, comme Monero).
 
     Les outputs INTERNES (sonde de liveness) sont exclus : ils ont un âge
@@ -372,10 +480,15 @@ def get_decoys(count: int | None = None):
     ils finissaient par représenter l'essentiel du pool. Conséquence observée
     en recette : l'entropie et l'asymétrie dérivaient au fil du temps, et le
     modèle entraîné une heure plus tôt ne correspondait plus au trafic.
+
+    Le pool est réapprovisionné ici s'il est passé sous le seuil : c'est le
+    chemin qu'un wallet honnête emprunte à chaque transaction, donc celui qui
+    doit constater une pénurie de leurres.
     """
     if count is None:
         count = RING_SIZE - 1
-    candidates = [o for o in OUTPUTS.values() if not o.get("internal")]
+    await _ensure_pool()
+    candidates = [o for o in _snapshot_outputs() if not o.get("internal")]
     count = max(0, min(count, len(candidates) - 1))
     if count == 0:
         return {"decoys": [], "ages_days": []}
@@ -400,7 +513,10 @@ def get_decoys(count: int | None = None):
                 decoys.append(output_id)
                 if len(decoys) == count:
                     break
-    return {"decoys": decoys, "ages_days": [OUTPUTS[i]["age_days"] for i in decoys]}
+    # Les âges viennent du snapshot : un output peut avoir été mis en
+    # quarantaine entre-temps, on ne relit pas OUTPUTS (KeyError possible).
+    ages = {o["id"]: o["age_days"] for o in candidates}
+    return {"decoys": decoys, "ages_days": [ages[i] for i in decoys]}
 
 
 # ------------------------------------------------------------------- paiement
@@ -413,7 +529,14 @@ class TxSubmitRequest(BaseModel):
     # client fournirait la sienne, dérivée de sa View Key.
     spend_private_key_hex: str | None = None
     # Anneau construit par le client. None => le serveur tire selon la gamma.
-    decoy_ids: list[str] | None = None
+    # `max_length=64` : la borne est appliquée par Pydantic AVANT le handler,
+    # donc avant toute recherche dans le registre. Un corps de 65 leurres est
+    # refusé en 422 sans coût (la vérification d'anneau est linéaire en N).
+    # Chaque identifiant est aussi borné : un id de 10 Mo coûterait un hachage
+    # de 10 Mo même sans lookup.
+    decoy_ids: list[Annotated[str, Field(max_length=128)]] | None = Field(
+        default=None, max_length=64
+    )
     # Marque le trafic de la sonde de liveness (exclu du ML).
     synthetic: bool = False
 
@@ -441,20 +564,21 @@ async def submit_tx(req: TxSubmitRequest):
         raise HTTPException(status_code=400, detail="output sans clé publique (registre dégradé)")
 
     if req.decoy_ids is not None:
-        unknown = [i for i in req.decoy_ids if i not in OUTPUTS]
-        if unknown:
-            raise HTTPException(status_code=400, detail=f"leurres inconnus: {unknown[:3]}")
-        # Borne dure : la vérification d'anneau est linéaire en N. Sans plafond,
-        # 100 000 leurres dans une requête suffisent à saturer le CPU — un déni
-        # de service à coût quasi nul pour l'attaquant.
+        # Ceinture et bretelles : Pydantic a déjà refusé > 64 en 422. Cette
+        # garde couvre un appel interne qui ne passerait pas par la validation.
+        # Elle est AVANT la recherche des inconnus : 65 identifiants inconnus
+        # ne doivent pas coûter 65 lookups.
         if len(req.decoy_ids) > 64:
             raise HTTPException(
                 status_code=400,
                 detail=f"anneau trop grand ({len(req.decoy_ids)} > 64)",
             )
+        unknown = [i for i in req.decoy_ids if i not in OUTPUTS]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"leurres inconnus: {unknown[:3]}")
         decoy_ids = req.decoy_ids
     else:
-        decoy_ids = get_decoys(RING_SIZE - 1)["decoys"]
+        decoy_ids = (await get_decoys(RING_SIZE - 1))["decoys"]
 
     ring = _ring_public_keys(real, decoy_ids)
     if len(ring) < 2:
@@ -577,7 +701,10 @@ async def submit_tx(req: TxSubmitRequest):
     REGISTRY.save_spent(req.real_output_id, key_image, time.time())
 
     latency_ms = (time.perf_counter() - started) * 1000
-    ages = [OUTPUTS[i]["age_days"] for i in decoy_ids]
+    # Les âges sont relus sur un snapshot : un leurre peut avoir été mis en
+    # quarantaine entre la validation et la télémétrie.
+    ages_by_id = {o["id"]: o["age_days"] for o in _snapshot_outputs()}
+    ages = [ages_by_id.get(i, 0.0) for i in decoy_ids]
 
     # Télémétrie : ne bloque jamais la réponse utilisateur.
     asyncio.create_task(
@@ -623,12 +750,138 @@ async def submit_tx(req: TxSubmitRequest):
 # ------------------------------------------------------- paiement d'une commande
 class PayRequest(BaseModel):
     amount: int
-    reference: str = ""
+    # Longueur bornée : une référence de 1 Mo grossirait la mémoire et le
+    # journal sans rien apporter.
+    reference: str = Field(default="", max_length=128)
+
+
+def _rate_limit_tx_pay(client_ip: str) -> None:
+    """Fenêtre glissante simple : N requêtes/s par IP, puis 429 + Retry-After.
+
+    Le WAF en amont ne protège PAS un accès direct au port publié : la
+    docstring historique le prétendait, c'était faux. Désactivé quand
+    `TX_PAY_RATE_LIMIT` vaut 0 (défaut), pour ne pas fausser les mesures de
+    charge.
+    """
+    limit = TX_PAY_RATE_LIMIT
+    if limit <= 0:
+        return
+    now = time.monotonic()
+    with _tx_pay_hits_lock:
+        if len(_tx_pay_hits) > 4096:
+            # Borne la mémoire : on purge les IP dont la fenêtre est finie.
+            stale = [
+                ip
+                for ip, hits in _tx_pay_hits.items()
+                if not hits or now - hits[-1] >= TX_PAY_RATE_WINDOW
+            ]
+            for ip in stale:
+                del _tx_pay_hits[ip]
+        hits = _tx_pay_hits.setdefault(client_ip, deque())
+        while hits and now - hits[0] >= TX_PAY_RATE_WINDOW:
+            hits.popleft()
+        if len(hits) >= limit:
+            retry_after = max(1, int(TX_PAY_RATE_WINDOW - (now - hits[0])) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="trop de paiements : réessayer dans un instant",
+                headers={"Retry-After": str(retry_after)},
+            )
+        hits.append(now)
+
+
+async def _payment_lock(reference: str) -> asyncio.Lock:
+    """Verrou par référence : deux rejeux simultanés ne paient qu'une fois.
+
+    Un verrou global sérialiserait TOUS les paiements (mesures de charge) ;
+    un verrou par référence ne bloque que les doublons.
+    """
+    async with _payment_locks_guard:
+        return _payment_locks.setdefault(reference, asyncio.Lock())
+
+
+def _remember_payment(reference: str, record: dict) -> None:
+    """Mémorise le résultat et borne la mémoire (le journal reste la vérité)."""
+    nouveau = reference not in PAYMENTS
+    PAYMENTS[reference] = record
+    if nouveau:
+        _payment_order.append(reference)
+    while len(_payment_order) > max(PAYMENTS_MEMORY_MAX, 1):
+        ancienne = _payment_order.popleft()
+        if ancienne == reference:
+            # Ne jamais oublier la référence qu'on vient d'insérer.
+            _payment_order.append(ancienne)
+            break
+        PAYMENTS.pop(ancienne, None)
+        verrou = _payment_locks.get(ancienne)
+        if verrou is not None and not verrou.locked():
+            del _payment_locks[ancienne]
+
+
+def _forget_payments() -> None:
+    """Vide le cache mémoire (tests et remise à zéro)."""
+    PAYMENTS.clear()
+    _payment_order.clear()
+    _payment_locks.clear()
+
+
+def _known_payment(reference: str) -> dict | None:
+    """Résultat déjà émis pour cette référence (mémoire, puis PostgreSQL)."""
+    record = PAYMENTS.get(reference)
+    if record is not None:
+        return record
+    record = REGISTRY.load_payment(reference)
+    if record is not None:
+        _remember_payment(reference, record)
+    return record
+
+
+def _payment_response(record: dict, reference: str, replayed: bool) -> dict:
+    return {
+        "status": "paid",
+        "reference": reference,
+        "amount": record["amount"],
+        "key_image": record["key_image"],
+        "ring_size": record["ring_size"],
+        "balance_ok": record.get("balance_ok", True),
+        "signature_scheme": record.get("signature_scheme", "bLSAG"),
+        "created_at": record["created_at"],
+        "replayed": replayed,
+    }
+
+
+async def _submit_payment(output_id: str, amount: int) -> dict:
+    """Dépense l'output émis via le chemin normal `/tx/submit`."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            f"{SELF_URL}/tx/submit",
+            json={"real_output_id": output_id, "amount": amount},
+        )
+    if response.status_code != 200:
+        detail = response.json().get("detail") if response.content else response.status_code
+        raise HTTPException(status_code=502, detail=f"paiement refusé par le registre: {detail}")
+    return response.json()
+
+
+async def _pay_once(amount: int) -> dict:
+    await _ensure_pool()
+    created = await _mint(1, internal=True, amount=amount)
+    if not created:
+        raise HTTPException(status_code=503, detail="registre indisponible")
+    body = await _submit_payment(created[-1], amount)
+    return {
+        "amount": body["amount"],
+        "key_image": body["key_image"],
+        "ring_size": body["ring_size"],
+        "balance_ok": body["balance_ok"],
+        "signature_scheme": body["signature_scheme"],
+        "created_at": time.time(),
+    }
 
 
 @app.post("/tx/pay")
-async def pay_order(req: PayRequest):
-    """Paiement d'une commande pour un montant EXACT.
+async def pay_order(req: PayRequest, request: Request):
+    """Paiement d'une commande pour un montant EXACT, idempotent par `reference`.
 
     Pourquoi un endpoint dédié : les outputs du registre portent des montants
     variés (1..500) qui rendent l'audit intéressant, mais un article coûte un
@@ -637,33 +890,48 @@ async def pay_order(req: PayRequest):
     signature d'anneau bLSAG, key image anti-double-dépense. Le paiement n'est
     pas simulé — il produit une vraie preuve cryptographique.
 
+    `reference` est la clé d'idempotence : un rejeu (timeout HTTP côté
+    boutique, retry réseau) renvoie le MÊME résultat avec `replayed: true` au
+    lieu d'émettre un second paiement. Une référence réutilisée avec un autre
+    montant est refusée en 409.
+
     Ce endpoint n'est pas protégé par le jeton de service : c'est le chemin
     client, celui qu'emprunte la boutique. Il est borné (montant, anneau) et
-    rate-limité par le WAF en amont.
+    limité en débit par IP si `TX_PAY_RATE_LIMIT` est configuré (désactivé par
+    défaut ; le WAF en amont ne protège pas un accès direct au port).
     """
+    _rate_limit_tx_pay(request.client.host if request.client else "inconnu")
+
     if not 1 <= req.amount <= 1_000_000:
         raise HTTPException(status_code=400, detail="montant hors bornes (1..1 000 000)")
-    created = await _mint(1, internal=True, amount=req.amount)
-    if not created:
-        raise HTTPException(status_code=503, detail="registre indisponible")
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.post(
-            f"{SELF_URL}/tx/submit",
-            json={"real_output_id": created[-1], "amount": req.amount},
+
+    reference = req.reference.strip()
+    if not reference:
+        # Sans référence, pas d'idempotence possible : comportement historique.
+        return _payment_response(await _pay_once(req.amount), "", replayed=False)
+
+    async with await _payment_lock(reference):
+        known = _known_payment(reference)
+        if known is not None:
+            if known["amount"] != req.amount:
+                raise HTTPException(
+                    status_code=409,
+                    detail="référence déjà utilisée avec un autre montant",
+                )
+            return _payment_response(known, reference, replayed=True)
+
+        record = await _pay_once(req.amount)
+        # Mémoire d'abord (source de lecture), journal ensuite : le rejeu reste
+        # instantané, et PostgreSQL protège du redémarrage.
+        _remember_payment(reference, record)
+        REGISTRY.save_payment(
+            reference,
+            record["key_image"],
+            record["ring_size"],
+            record["amount"],
+            record["created_at"],
         )
-    if response.status_code != 200:
-        detail = response.json().get("detail") if response.content else response.status_code
-        raise HTTPException(status_code=502, detail=f"paiement refusé par le registre: {detail}")
-    body = response.json()
-    return {
-        "status": "paid",
-        "reference": req.reference,
-        "amount": body["amount"],
-        "key_image": body["key_image"],
-        "ring_size": body["ring_size"],
-        "balance_ok": body["balance_ok"],
-        "signature_scheme": body["signature_scheme"],
-    }
+        return _payment_response(record, reference, replayed=False)
 
 
 def _observation(
@@ -758,7 +1026,8 @@ async def verify_pin(req: PinRequest):
             headers={"Retry-After": str(retry)},
         )
 
-    pin_attempts.append(now)
+    with _pin_lock:
+        pin_attempts.append(now)
     # `PIN_CODE` est un secret de configuration, jamais une constante du code :
     # la valeur 1234 qui figurait ici était une faille volontaire.
     #
@@ -767,8 +1036,9 @@ async def verify_pin(req: PinRequest):
     # le compteur d'échecs ni le verrouillage — un angle mort.
     ok = hmac.compare_digest(req.pin.encode(), PIN_CODE.encode())
     if not ok:
-        pin_failures.append(now)
-        _pin_state["failures"] += 1
+        with _pin_lock:
+            pin_failures.append(now)
+            _pin_state["failures"] += 1
         if _pin_state["failures"] >= PIN_LOCKOUT_THRESHOLD:
             _pin_state["locked_until"] = now + PIN_LOCKOUT_SECONDS
             _pin_state["failures"] = 0
@@ -796,8 +1066,11 @@ async def verify_pin(req: PinRequest):
 @app.get("/pin/stats")
 def pin_stats():
     now = time.time()
-    attempts = sum(1 for t in pin_attempts if now - t <= PIN_WINDOW_SECONDS)
-    failures = sum(1 for t in pin_failures if now - t <= PIN_WINDOW_SECONDS)
+    # Copie sous verrou : l'itération ne peut pas croiser un `append` du
+    # chemin `/pin/verify`.
+    with _pin_lock:
+        attempts = sum(1 for t in pin_attempts if now - t <= PIN_WINDOW_SECONDS)
+        failures = sum(1 for t in pin_failures if now - t <= PIN_WINDOW_SECONDS)
     return {
         "window_seconds": PIN_WINDOW_SECONDS,
         "attempts": attempts,
@@ -889,6 +1162,75 @@ def set_ring_size(req: RingSizeRequest):
     return {"status": "hardened", "ring_size": RING_SIZE, "previous": previous}
 
 
+async def _submit_probe(probe_id: str) -> int:
+    """Dépense la sonde via `/tx/submit` (même chemin que les clients)."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.post(
+            f"{SELF_URL}/tx/submit",
+            json={"real_output_id": probe_id, "synthetic": True},
+        )
+    return response.status_code
+
+
+def _forget_probe_outputs(output_ids: list[str]) -> None:
+    """Retire des outputs internes usés du registre mémoire ET du journal.
+
+    La sonde émet un output toutes les 4 s (~21 600/jour) et ne les retirait
+    jamais : le dictionnaire grossissait indéfiniment, `/metrics` avec lui. On
+    garde les N derniers (diagnostic), les plus vieux sont dépensés donc sans
+    valeur pour la démonstration.
+    """
+    if not output_ids:
+        return
+    with _outputs_lock:
+        for output_id in output_ids:
+            OUTPUTS.pop(output_id, None)
+    for output_id in output_ids:
+        spent_output_ids.discard(output_id)
+    REGISTRY.quarantine(list(output_ids))
+
+
+def _forget_probe_output(output_id: str) -> None:
+    _forget_probe_outputs([output_id])
+
+
+def _probe_order(output_id: str) -> int:
+    """Ordre d'émission d'un identifiant `output_<n>` (0 si non numérique)."""
+    try:
+        return int(output_id.rsplit("_", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _prune_probe_outputs(keep: int | None = None) -> list[str]:
+    """Ne conserve que les `keep` derniers outputs internes. Retourne les retirés."""
+    keep = max(keep if keep is not None else PROBE_OUTPUT_RETENTION, 1)
+    internes = [o["id"] for o in _snapshot_outputs() if o.get("internal")]
+    internes.sort(key=_probe_order)
+    excedent = internes[:-keep]
+    _forget_probe_outputs(excedent)
+    return excedent
+
+
+async def _auto_probe_once() -> None:
+    """Un cycle de la sonde : émettre, dépenser, oublier le plus vieil output."""
+    created = await _mint(1, internal=True)
+    if not created:
+        auto_probe_status["ok"] = False
+        auto_probe_status["last_error"] = "émission impossible (portefeuille non prêt)"
+        return
+    # L'identifiant vient de l'émission, pas d'un compteur partagé : une
+    # ré-alimentation concurrente pourrait sinon faire dépenser la mauvaise
+    # sonde.
+    probe_id = created[-1]
+    # La borne est appliquée AVANT la dépense : si `/tx/submit` échoue en
+    # boucle, l'output non dépensé ne s'accumule pas pour autant.
+    _probe_outputs.append(probe_id)
+    while len(_probe_outputs) > max(PROBE_OUTPUT_RETENTION, 1):
+        _forget_probe_output(_probe_outputs.popleft())
+    auto_probe_status["ok"] = await _submit_probe(probe_id) == 200
+
+
 async def _auto_probe_loop():
     """Bot de transaction légitime : preuve continue avant/pendant/après.
 
@@ -902,17 +1244,7 @@ async def _auto_probe_loop():
     """
     while True:
         try:
-            # L'identifiant vient de l'émission, pas d'un compteur partagé : une
-            # ré-alimentation concurrente pourrait sinon faire dépenser la
-            # mauvaise sonde.
-            created = await _mint(1, internal=True)
-            probe_id = created[-1]
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.post(
-                    f"{SELF_URL}/tx/submit",
-                    json={"real_output_id": probe_id, "synthetic": True},
-                )
-            auto_probe_status["ok"] = response.status_code == 200
+            await _auto_probe_once()
         except Exception as exc:  # noqa: BLE001 - la sonde ne doit jamais tuer le service
             auto_probe_status["ok"] = False
             auto_probe_status["last_error"] = f"{type(exc).__name__}: {exc}"
@@ -940,31 +1272,35 @@ def quarantine_outputs():
     ne pouvait plus fournir 10 leurres. Constaté en recette.
     """
     suspects = sorted(
-        OUTPUTS.values(), key=lambda o: o["age_days"], reverse=True
+        _snapshot_outputs(), key=lambda o: o["age_days"], reverse=True
     )[:25]
     quarantined = {o["id"] for o in suspects}
-    for output_id in quarantined:
-        OUTPUTS.pop(output_id, None)
+    with _outputs_lock:
+        for output_id in quarantined:
+            OUTPUTS.pop(output_id, None)
     REGISTRY.quarantine(sorted(quarantined))
     return {
         "status": "quarantined",
         "count": len(quarantined),
         "criterion": "oldest_outputs",
-        "remaining_outputs": len(OUTPUTS),
+        "remaining_outputs": len(_snapshot_outputs()),
     }
 
 
 @app.get("/metrics")
 def metrics():
     """Métriques Prometheus du paiement et du noyau cryptographique."""
-    internal = sum(1 for o in OUTPUTS.values() if o.get("internal"))
+    # Un seul snapshot pour toutes les jauges : les compteurs restent cohérents
+    # entre eux, et l'itération ne peut pas voir le dict changer de taille.
+    snapshot = _snapshot_outputs()
+    internal = sum(1 for o in snapshot if o.get("internal"))
     lines = [
         "# HELP shadow_outputs_total Outputs présents dans le registre",
         "# TYPE shadow_outputs_total gauge",
-        f"shadow_outputs_total {len(OUTPUTS)}",
+        f"shadow_outputs_total {len(snapshot)}",
         "# HELP shadow_outputs_unspent Outputs encore dépensables",
         "# TYPE shadow_outputs_unspent gauge",
-        f"shadow_outputs_unspent {sum(1 for i in OUTPUTS if i not in spent_output_ids)}",
+        f"shadow_outputs_unspent {sum(1 for o in snapshot if o['id'] not in spent_output_ids)}",
         "# HELP shadow_outputs_internal Outputs de la sonde de liveness",
         "# TYPE shadow_outputs_internal gauge",
         f"shadow_outputs_internal {internal}",
@@ -989,6 +1325,12 @@ def metrics():
         "# HELP shadow_registry_durable 1 si le registre d'outputs survit a un redemarrage",
         "# TYPE shadow_registry_durable gauge",
         f"shadow_registry_durable {1 if REGISTRY.available else 0}",
+        "# HELP shadow_registry_lost_writes_total Ecritures perdues pendant une indisponibilite PostgreSQL",
+        "# TYPE shadow_registry_lost_writes_total counter",
+        f"shadow_registry_lost_writes_total {REGISTRY.lost_writes}",
+        "# HELP shadow_registry_reconnect_attempts_total Tentatives de reconnexion au registre",
+        "# TYPE shadow_registry_reconnect_attempts_total counter",
+        f"shadow_registry_reconnect_attempts_total {REGISTRY.reconnect_attempts}",
         "# HELP shadow_telemetry_dropped_total Observations perdues (ML injoignable ou jeton refuse)",
         "# TYPE shadow_telemetry_dropped_total counter",
         f"shadow_telemetry_dropped_total {TELEMETRY['dropped']}",

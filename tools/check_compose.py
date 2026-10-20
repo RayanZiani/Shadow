@@ -24,6 +24,43 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
+# Les 19 services que la démonstration attend. Cette liste est le contrat :
+# un service retiré du compose (renommage, fusion, suppression accidentelle)
+# ne fait PAS échouer `docker compose up` — la pile démarre avec une brique en
+# moins, et la panne n'apparaît qu'au moment de la démo. On la vérifie donc
+# nommément.
+EXPECTED_SERVICES = (
+    "db-postgres",
+    "postgres-exporter",
+    "vault",
+    "prometheus",
+    "alertmanager",
+    "grafana",
+    "loki",
+    "promtail",
+    "monero-crypto-core",
+    "auth-service",
+    "payment-api",
+    "front-dashboard",
+    "backoffice",
+    "shop-api",
+    "rag-assistant",
+    "shadow-api",
+    "waf",
+    "ml-detector",
+    "remediation-engine",
+)
+
+# La console Windows est en cp1252 par défaut : la flèche « → » des messages
+# levait UnicodeEncodeError au milieu du contrôle (traceback, sortie tronquée,
+# code de sortie 1 illisible). On force UTF-8, avec `replace` pour qu'un
+# caractère non représentable ne fasse jamais échouer le script.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # flux sans reconfigure (IDE, pytest)
+        pass
+
 
 def load_yaml(path: pathlib.Path):
     try:
@@ -56,6 +93,21 @@ def main() -> int:
 
     print(f"docker-compose.yml : {len(services)} services, "
           f"{len(volumes)} volumes, {len(networks)} réseaux")
+
+    # 0. La LISTE des services attendus -----------------------------------
+    print("\n0. Services attendus")
+    for expected in EXPECTED_SERVICES:
+        if expected not in services:
+            check(False, f"{expected}: service présent dans docker-compose.yml",
+                  "ABSENT — la pile démarrerait sans cette brique")
+    unexpected = sorted(set(services) - set(EXPECTED_SERVICES))
+    if unexpected:
+        warnings.append("services non attendus dans le compose : " + ", ".join(unexpected))
+    check(
+        len(services) == len(EXPECTED_SERVICES),
+        f"{len(EXPECTED_SERVICES)} services exactement",
+        f"{len(services)} trouvés",
+    )
 
     # 1. Chaque service construit un Dockerfile qui existe -----------------
     print("\n1. Contextes de construction")
@@ -201,6 +253,33 @@ def main() -> int:
               f"{len(actionable)} actionnables")
         unknown = sorted(actionable - declared_alerts)
         check(not unknown, "toute alerte actionnable existe dans une règle", ", ".join(unknown))
+
+    # 11. Collisions de tables SQL entre services -------------------------
+    # Deux services qui écrivent dans la même base (`shadow_settle`) et créent
+    # une table du même nom s'écrasent silencieusement : `CREATE TABLE IF NOT
+    # EXISTS` laisse gagner le premier démarré, et l'autre échoue à l'insertion
+    # (« column does not exist »). C'est arrivé avec `payments` (registre de
+    # payment-api vs paiements de shop-api) — trouvé à l'audit du 20/10.
+    print("\n11. Collisions de tables SQL entre services")
+    tables: dict[str, set[str]] = {}
+    for service_dir in sorted((ROOT / "services").iterdir()):
+        if not service_dir.is_dir():
+            continue
+        for path in service_dir.rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for table in re.findall(
+                r"CREATE TABLE IF NOT EXISTS\s+([a-z_][a-z0-9_]*)", text, re.I
+            ):
+                tables.setdefault(table.lower(), set()).add(service_dir.name)
+    collisions = {t: s for t, s in tables.items() if len(s) > 1}
+    print(f"  {len(tables)} tables déclarées dans les services")
+    check(
+        not collisions,
+        "aucune table homonyme entre deux services",
+        ", ".join(f"{t} ({' + '.join(sorted(s))})" for t, s in sorted(collisions.items())),
+    )
 
     # Récapitulatif --------------------------------------------------------
     print()

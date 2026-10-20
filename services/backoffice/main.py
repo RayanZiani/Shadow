@@ -194,8 +194,55 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             is None
         )
 
-    def active_admins() -> int:
-        return int(db.scalar("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1") or 0)
+    def active_admins(conn=None) -> int:
+        """Administrateurs réellement capables de se connecter.
+
+        La connexion exige un visage enrôlé (`/auth/identify` refuse un compte
+        sans descripteur facial) : un admin actif mais sans visage ne peut donc
+        jamais rouvrir de session et ne doit pas compter dans la garde du
+        « dernier administrateur ». Compter ces comptes-là revenait à protéger
+        des administrateurs fantômes et à laisser le back-office sans personne
+        capable d'entrer.
+
+        `conn` permet de faire le décompte DANS une transaction déjà ouverte
+        (voir `refuse_if_last_admin`), donc sur le même état que l'écriture.
+        """
+        sql = (
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND active=1 "
+            "AND face_embedding IS NOT NULL"
+        )
+        if conn is not None:
+            return int(conn.execute(sql).fetchone()[0] or 0)
+        return int(db.scalar(sql) or 0)
+
+    def is_connectable_admin(row) -> bool:
+        """Un admin qui peut réellement ouvrir une session : actif + visage."""
+        return (
+            row["role"] == "admin"
+            and bool(row["active"])
+            and row["face_embedding"] is not None
+        )
+
+    def refuse_if_last_admin(conn, row, action: str) -> None:
+        """Garde « dernier administrateur », exécutée SOUS `BEGIN IMMEDIATE`.
+
+        `row` est relu dans la transaction : le comptage et l'écriture qui suit
+        voient le même état, donc deux rétrogradations concurrentes ne peuvent
+        plus se croiser (chacune lisait `2`, chacune passait, il en restait 0).
+
+        Un admin sans visage n'est pas compté : il ne pouvait pas se connecter,
+        le rétrograder ne retire donc aucune capacité d'accès.
+        """
+        if not is_connectable_admin(row):
+            return
+        if active_admins(conn) <= 1:
+            fail(
+                409,
+                "last_admin",
+                f"impossible de {action} : c'est le dernier administrateur "
+                "capable de se connecter (actif et visage enrôlé). Le "
+                "back-office deviendrait inaccessible.",
+            )
 
     def lockout_state(username: str) -> dict:
         row = db.one(
@@ -807,39 +854,51 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             except PolicyError as exc:
                 fail(400, "policy", str(exc))
 
-        becomes_non_admin = (
-            target["role"] == "admin"
-            and (
-                changes.get("role", "admin") != "admin"
-                or changes.get("active", int(target["active"])) == 0
-            )
-        )
-        if becomes_non_admin and active_admins() <= 1:
-            fail(
-                409,
-                "last_admin",
-                "impossible de désactiver ou rétrograder le dernier administrateur",
-            )
-
         if not changes:
             return {"user": public_user(target), "changed": []}
 
         # Liste blanche : les colonnes viennent d'un modèle Pydantic, mais
         # une garantie locale se relit mieux qu'un raisonnement global.
+        # Exception explicite plutôt qu'un `assert` : celui-ci disparaîtrait
+        # avec `python -O`, et la garde avec lui.
         allowed = {"role", "active", "password_hash"}
-        assert set(changes) <= allowed, f"colonne non autorisée : {set(changes) - allowed}"
-        assignments = ", ".join(f"{column} = ?" for column in changes)
-        db.run(
-            f"UPDATE users SET {assignments} WHERE id = ?",
-            (*changes.values(), user_id),
-        )
-        # Un mot de passe changé ou un compte désactivé doit fermer les
-        # sessions ouvertes : sinon l'ancien titulaire garde l'accès.
-        if "password_hash" in changes or changes.get("active") == 0:
-            db.run(
-                "UPDATE sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0",
-                (user_id,),
+        unauthorized = set(changes) - allowed
+        if unauthorized:
+            raise RuntimeError(
+                f"colonne non autorisée dans la mise à jour : {sorted(unauthorized)}"
             )
+        assignments = ", ".join(f"{column} = ?" for column in changes)
+
+        # Garde et écriture dans UNE seule transaction (`BEGIN IMMEDIATE`) :
+        # la relecture de la cible et le comptage voient l'état verrouillé, donc
+        # deux PATCH concurrents ne peuvent pas rétrograder chacun le dernier
+        # admin. Le second voit la mise à jour du premier et reçoit 409.
+        with db.transaction() as conn:
+            current = conn.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if current is None:
+                fail(404, "user_unknown", "utilisateur inconnu")
+            new_role = changes.get("role", current["role"])
+            new_active = int(changes.get("active", int(current["active"])))
+            if new_role != "admin" or new_active == 0:
+                action = (
+                    "rétrograder ce compte"
+                    if new_role != "admin"
+                    else "désactiver ce compte"
+                )
+                refuse_if_last_admin(conn, current, action)
+            conn.execute(
+                f"UPDATE users SET {assignments} WHERE id = ?",
+                (*changes.values(), user_id),
+            )
+            # Un mot de passe changé ou un compte désactivé doit fermer les
+            # sessions ouvertes : sinon l'ancien titulaire garde l'accès.
+            if "password_hash" in changes or new_active == 0:
+                conn.execute(
+                    "UPDATE sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0",
+                    (user_id,),
+                )
         audit(
             user["username"],
             "user_updated",
@@ -860,16 +919,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         user: dict = Depends(require_role("admin")),
     ):
         ip = client_ip(request)
-        target = db.one("SELECT * FROM users WHERE id = ?", (user_id,))
-        if target is None:
-            fail(404, "user_unknown", "utilisateur inconnu")
-        if target["role"] == "admin" and active_admins() <= 1:
-            fail(409, "last_admin", "impossible de désactiver le dernier administrateur")
-        db.run("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
-        db.run(
-            "UPDATE sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0",
-            (user_id,),
-        )
+        # Même transaction que le PATCH : la garde et la désactivation sont
+        # atomiques, et la cible est relue sous verrou d'écriture.
+        with db.transaction() as conn:
+            target = conn.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if target is None:
+                fail(404, "user_unknown", "utilisateur inconnu")
+            refuse_if_last_admin(conn, target, "désactiver ce compte")
+            conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
+            conn.execute(
+                "UPDATE sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0",
+                (user_id,),
+            )
         audit(user["username"], "user_deactivated", ip, target=target["username"])
         return {"deactivated": True, "id": user_id}
 
@@ -908,13 +971,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         user: dict = Depends(require_role("admin")),
     ):
         ip = client_ip(request)
-        target = db.one("SELECT * FROM users WHERE id = ?", (user_id,))
-        if target is None:
-            fail(404, "user_unknown", "utilisateur inconnu")
-        db.run(
-            "UPDATE users SET face_embedding = NULL, face_enrolled_at = NULL WHERE id = ?",
-            (user_id,),
-        )
+        with db.transaction() as conn:
+            target = conn.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if target is None:
+                fail(404, "user_unknown", "utilisateur inconnu")
+            # Retirer le visage du dernier admin connectable produit exactement
+            # le même effet qu'une désactivation : plus personne ne peut entrer.
+            if target["face_embedding"] is not None:
+                refuse_if_last_admin(conn, target, "retirer le visage de ce compte")
+            conn.execute(
+                "UPDATE users SET face_embedding = NULL, face_enrolled_at = NULL "
+                "WHERE id = ?",
+                (user_id,),
+            )
         audit(user["username"], "face_removed", ip, target=target["username"])
         return {"face_enrolled": False, "id": user_id}
 
@@ -997,6 +1068,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 db.scalar("SELECT COUNT(*) FROM users WHERE active = 1") or 0
             ),
             "admins": active_admins(),
+            # Distinct de `admins` : un admin sans visage est actif mais ne peut
+            # pas se connecter, il ne compte donc pas dans la garde.
+            "admins_total": int(
+                db.scalar("SELECT COUNT(*) FROM users WHERE role = 'admin' AND active = 1")
+                or 0
+            ),
             "faces_enrolled": int(
                 db.scalar("SELECT COUNT(*) FROM users WHERE face_embedding IS NOT NULL")
                 or 0

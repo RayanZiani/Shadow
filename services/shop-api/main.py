@@ -24,9 +24,12 @@ Lancement :  uvicorn main:create_app --factory --host 0.0.0.0 --port 8087
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import os
+import pathlib
 import re
 import secrets
 import time
@@ -35,6 +38,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from db import Database
@@ -43,12 +47,37 @@ from svc_auth import service_token_configured
 LOG = logging.getLogger("shop-api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+HERE = pathlib.Path(__file__).resolve().parent
 PAYMENT_API_URL = os.environ.get("PAYMENT_API_URL", "http://payment-api:8080")
 BACKOFFICE_URL = os.environ.get("BACKOFFICE_URL", "http://backoffice:8086")
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./data/shop.db")
 MAX_BODY_BYTES = 64 * 1024
 MAX_QUANTITY = 20
 CUSTOMER_REF_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+# Durée de validité d'une réservation de stock. Au-delà, la commande restée
+# `pending` est expirée et le stock restitué (voir `sweep_pending_orders`).
+DEFAULT_PENDING_TTL_SECONDS = 120.0
+DEFAULT_SWEEP_INTERVAL_SECONDS = 30.0
+
+
+class FailSoftStaticFiles(StaticFiles):
+    """Sert `/static` sans faire tomber le service si le dossier manque.
+
+    `check_dir=False` évite l'erreur au montage, mais Starlette vérifie encore
+    le dossier au **premier appel** et lève `RuntimeError` : la première
+    requête d'image produirait un 500. Ici, un dossier absent est signalé dans
+    les logs et les images répondent 404 — un contenu manquant, pas une panne.
+    """
+
+    async def check_config(self) -> None:
+        try:
+            await super().check_config()
+        except RuntimeError:
+            LOG.warning(
+                "dossier statique absent (%s) : les images répondront 404",
+                self.directory,
+            )
+
 
 CATALOG = [
     {
@@ -143,7 +172,7 @@ class ProductUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
-def create_app(database_url: str | None = None) -> FastAPI:
+def create_app(database_url: str | None = None, static_dir: str | None = None) -> FastAPI:
     url = database_url or DATABASE_URL
     # `sqlite:///./data/shop.db` -> chemin local ; `postgresql://...` -> psycopg.
     path = url[len("sqlite:///"):] if url.startswith("sqlite:///") else url
@@ -158,10 +187,40 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 "PostgreSQL est utilisé en pile complète",
                 path,
             )
-        yield
-        db.close()
+        # 1. Réparation des commandes laissées `pending` par un arrêt brutal :
+        #    c'est exactement l'état dans lequel `kill -9` laisse la boutique.
+        ttl_seconds = _pending_ttl_seconds()
+        try:
+            sweep_pending_orders(db, ttl_seconds)
+        except Exception:  # noqa: BLE001
+            # Un balayage raté ne doit pas empêcher le service de démarrer :
+            # `/healthz` dira `degraded` si la base est en cause.
+            LOG.exception("balayage initial des commandes en attente : échec")
+        # 2. Puis périodiquement, pour le cas d'un processus qui reste debout
+        #    mais dont l'appel de paiement ne revient jamais.
+        sweeper = asyncio.create_task(
+            _pending_sweeper(db, ttl_seconds, _sweep_interval_seconds())
+        )
+        try:
+            yield
+        finally:
+            sweeper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sweeper
+            db.close()
 
     app = FastAPI(title="shop-api", version="1.0.0", lifespan=lifespan)
+    # Images produit servies localement (`/static/products/<SKU>.svg`).
+    # `check_dir=False` : un déploiement sans le dossier ne doit pas empêcher le
+    # service de démarrer ; les images répondent alors 404 (fail-soft).
+    app.mount(
+        "/static",
+        FailSoftStaticFiles(
+            directory=str(pathlib.Path(static_dir) if static_dir else HERE / "static"),
+            check_dir=False,
+        ),
+        name="static",
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -735,6 +794,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 now,
                 now,
             ),
+            returning=True,
         )
         return {"product": public_product(db.one("SELECT * FROM products WHERE id = ?", (product_id,)))}
 
@@ -757,7 +817,15 @@ def create_app(database_url: str | None = None) -> FastAPI:
         changes["updated_at"] = time.time()
         # Liste blanche : aucune colonne arbitraire ne peut entrer dans le SQL.
         allowed = {"name", "description", "price_cents", "stock", "active", "image_url", "updated_at"}
-        assert set(changes) <= allowed, f"colonne non autorisée : {set(changes) - allowed}"
+        unauthorized = set(changes) - allowed
+        if unauthorized:
+            # Pas un `assert` : sous `python -O` il disparaîtrait, et une garde
+            # de sécurité qui s'évapore selon les options d'interpréteur n'en
+            # est pas une.
+            raise HTTPException(
+                status_code=500,
+                detail=f"colonne non autorisée : {sorted(unauthorized)}",
+            )
         assignments = ", ".join(f"{column} = ?" for column in changes)
         db.run(
             f"UPDATE products SET {assignments} WHERE id = ?",
@@ -896,28 +964,253 @@ def _seed_catalog(db: Database) -> None:
 
     Sans lui, la boutique s'ouvre sur une page vide le jour de la démonstration.
     Les articles sont de vrais enregistrements en base, modifiables par le back.
+    Chaque article reçoit l'URL de son image locale, servie par le montage
+    `/static` (chemin **relatif à l'API** : le front le préfixe par l'URL de
+    base de la boutique).
     """
     existing = db.query("SELECT COUNT(*) AS n FROM products")[0]["n"]
-    if int(existing) > 0:
-        return
     now = time.time()
+    if int(existing) == 0:
+        for product in CATALOG:
+            db.run(
+                "INSERT INTO products(sku, name, description, price_cents, stock, active, "
+                "image_url, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    product["sku"],
+                    product["name"],
+                    product["description"],
+                    product["price_cents"],
+                    product["stock"],
+                    True,
+                    _product_image_url(product["sku"]),
+                    now,
+                    now,
+                ),
+            )
+        LOG.info("catalogue de démonstration inséré (%d articles)", len(CATALOG))
+    # Rattrapage : une base créée avant les images a `image_url = NULL`. On ne
+    # réécrit jamais une URL choisie par l'administrateur.
     for product in CATALOG:
         db.run(
-            "INSERT INTO products(sku, name, description, price_cents, stock, active, "
-            "image_url, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            "UPDATE products SET image_url = ?, updated_at = ? "
+            "WHERE sku = ? AND image_url IS NULL",
+            (_product_image_url(product["sku"]), now, product["sku"]),
+        )
+
+
+def _product_image_url(sku: str) -> str:
+    """Chemin relatif à l'API, jamais une URL absolue (le front la préfixe)."""
+    return f"/static/products/{sku}.svg"
+
+
+def _pending_ttl_seconds() -> float:
+    """TTL de réservation, `SHOP_PENDING_TTL_SECONDS` (défaut 120 s)."""
+    return _positive_float("SHOP_PENDING_TTL_SECONDS", DEFAULT_PENDING_TTL_SECONDS)
+
+
+def _sweep_interval_seconds() -> float:
+    """Période du balayage, `SHOP_PENDING_SWEEP_SECONDS` (défaut 30 s)."""
+    return _positive_float("SHOP_PENDING_SWEEP_SECONDS", DEFAULT_SWEEP_INTERVAL_SECONDS)
+
+
+def _positive_float(name: str, default: float) -> float:
+    """Lit une durée d'environnement ; une valeur absurde retombe sur le défaut.
+
+    Une variable mal écrite ne doit pas empêcher la boutique de démarrer, mais
+    elle doit être dite dans les logs — pas avalée en silence.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        LOG.warning("%s=%r n'est pas un nombre : défaut %.0f s", name, raw, default)
+        return default
+    if value <= 0:
+        LOG.warning("%s=%r doit être positif : défaut %.0f s", name, raw, default)
+        return default
+    return value
+
+
+async def _pending_sweeper(db: Database, ttl_seconds: float, interval_seconds: float) -> None:
+    """Balayage périodique, annulé proprement par le `lifespan` à l'arrêt.
+
+    Les appels base sont bloquants : ils partent dans un thread pour ne pas
+    geler l'event loop (les autres requêtes continuent de servir).
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await asyncio.to_thread(sweep_pending_orders, db, ttl_seconds)
+        except Exception:  # noqa: BLE001
+            # Une erreur de balayage ne doit pas tuer la tâche : au prochain
+            # tour, la base est peut-être revenue. L'échec est tracé.
+            LOG.exception("balayage périodique des commandes en attente : échec")
+
+
+def sweep_pending_orders(
+    db: Database, ttl_seconds: float, now: float | None = None
+) -> dict[str, list[str]]:
+    """Répare les commandes restées `pending` au-delà du TTL de réservation.
+
+    Deux cas réels, tous deux vus en exploitation :
+
+    1. **Processus mort entre la réservation et l'appel de paiement.** La
+       commande est `pending`, le stock décrémenté, et personne ne répare. Ici,
+       toute commande plus vieille que `ttl_seconds` passe en `failed` et son
+       stock est restitué.
+    2. **Paiement réussi mais commande `failed` côté boutique** (timeout HTTP
+       sur `/tx/pay`). Si la base locale dit déjà `payments.status = 'paid'`,
+       on ne restitue **pas** le stock une seconde fois : un événement
+       `reconciled` est écrit pour l'audit, la commande reste `failed` et
+       l'écart est signalé dans les logs (le remboursement est hors périmètre).
+
+    L'expiration est **atomique et idempotente** : `UPDATE ... WHERE
+    reference = ? AND status = 'pending'` d'abord, restitution seulement si
+    exactement une ligne a changé. Deux balayages concurrents, ou un second
+    passage après le premier, ne restituent donc jamais deux fois.
+    """
+    moment = time.time() if now is None else now
+    cutoff = moment - ttl_seconds
+    rows = db.query(
+        "SELECT id, reference FROM orders WHERE status = 'pending' AND created_at <= ?",
+        (cutoff,),
+    )
+    expired: list[str] = []
+    reconciled: list[str] = []
+    for row in rows:
+        with db.transaction() as conn:
+            # Réclamation atomique : un seul balayage (ou un seul thread) peut
+            # faire passer CETTE commande de pending à failed.
+            affected = db.tx_run(
+                conn,
+                "UPDATE orders SET status = 'failed' WHERE reference = ? AND status = 'pending'",
+                (row["reference"],),
+            )
+            if affected != 1:
+                continue
+            payment = db.tx_one(
+                conn,
+                "SELECT id, status FROM payments WHERE order_id = ? ORDER BY id DESC LIMIT 1",
+                (row["id"],),
+            )
+            items = db.tx_query(
+                conn,
+                "SELECT product_id, quantity FROM order_items WHERE order_id = ?",
+                (row["id"],),
+            )
+            if payment is not None and payment["status"] == "paid":
+                # Le paiement a abouti : ne pas restituer un stock déjà vendu.
+                db.tx_run(
+                    conn,
+                    "UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ?",
+                    (moment, row["id"]),
+                )
+                db.tx_run(
+                    conn,
+                    "INSERT INTO payment_events(payment_id, event, detail, created_at) "
+                    "VALUES(?,?,?,?)",
+                    (
+                        payment["id"],
+                        "reconciled",
+                        json.dumps(
+                            {
+                                "reference": row["reference"],
+                                "reason": "paiement déjà paid localement",
+                            }
+                        ),
+                        moment,
+                    ),
+                )
+                reconciled.append(row["reference"])
+                continue
+            for item in items:
+                db.tx_run(
+                    conn,
+                    "UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?",
+                    (item["quantity"], moment, item["product_id"]),
+                )
+            if payment is not None:
+                db.tx_run(
+                    conn,
+                    "UPDATE payments SET status = 'failed' WHERE id = ? AND status = 'pending'",
+                    (payment["id"],),
+                )
+                db.tx_run(
+                    conn,
+                    "INSERT INTO payment_events(payment_id, event, detail, created_at) "
+                    "VALUES(?,?,?,?)",
+                    (
+                        payment["id"],
+                        "expired",
+                        json.dumps(
+                            {
+                                "reference": row["reference"],
+                                "reason": "expired",
+                                "ttl_seconds": ttl_seconds,
+                            }
+                        ),
+                        moment,
+                    ),
+                )
+            expired.append(row["reference"])
+    reconciled.extend(_reconcile_failed_payments(db, moment))
+    if expired or reconciled:
+        LOG.warning(
+            "balayage des commandes : %d expirée(s) %s, %d réconciliée(s) %s",
+            len(expired),
+            expired,
+            len(reconciled),
+            reconciled,
+        )
+    return {"expired": expired, "reconciled": reconciled}
+
+
+def _reconcile_failed_payments(db: Database, now: float) -> list[str]:
+    """Commandes `failed` dont le paiement local est `paid` : ne rien restituer.
+
+    Le stock a déjà été rendu par le chemin d'échec de `/checkout` ; le
+    restituer encore serait une double restitution (stock fantôme). On écrit
+    un événement `reconciled` **une seule fois** (idempotent) et on laisse la
+    commande `failed` : le remboursement est hors périmètre, mais l'écart est
+    visible dans `payment_events` et dans les logs, jamais silencieux.
+    """
+    rows = db.query(
+        "SELECT o.id, o.reference, p.id AS payment_id FROM orders o "
+        "JOIN payments p ON p.order_id = o.id "
+        "WHERE o.status = 'failed' AND p.status = 'paid'"
+    )
+    reconciled: list[str] = []
+    for row in rows:
+        already = db.one(
+            "SELECT 1 FROM payment_events WHERE payment_id = ? AND event = 'reconciled'",
+            (row["payment_id"],),
+        )
+        if already:
+            continue
+        db.run(
+            "INSERT INTO payment_events(payment_id, event, detail, created_at) "
+            "VALUES(?,?,?,?)",
             (
-                product["sku"],
-                product["name"],
-                product["description"],
-                product["price_cents"],
-                product["stock"],
-                True,
-                None,
-                now,
+                row["payment_id"],
+                "reconciled",
+                json.dumps(
+                    {
+                        "reference": row["reference"],
+                        "reason": "paiement réussi côté payment-api, stock déjà restitué",
+                    }
+                ),
                 now,
             ),
         )
-    LOG.info("catalogue de démonstration inséré (%d articles)", len(CATALOG))
+        LOG.warning(
+            "réconciliation : commande %s failed mais paiement paid — "
+            "stock non restitué une seconde fois, remboursement manuel requis",
+            row["reference"],
+        )
+        reconciled.append(row["reference"])
+    return reconciled
 
 
 if __name__ == "__main__":

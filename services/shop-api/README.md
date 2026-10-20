@@ -10,7 +10,7 @@ est écrit ici.
 | Port | **8087** |
 | Base | **PostgreSQL** (`db-postgres`, base `shadow_settle`) |
 | Dépend de | `payment-api` (paiement), `backoffice` (sessions admin) |
-| Tests | 28, sur SQLite en mémoire (même SQL, mêmes transactions) |
+| Tests | 36, sur SQLite en mémoire (même SQL, mêmes transactions) |
 
 ---
 
@@ -62,6 +62,59 @@ GET  /orders/{ref}?customer_ref=…  détail + preuve de paiement
 
 Un paiement refusé n'est donc jamais un stock perdu, et une commande n'est
 jamais `paid` sans preuve cryptographique.
+
+### Réservations expirées : le balayage des `pending`
+
+Si le processus meurt entre la réservation du stock et l'appel de paiement
+(`kill -9`, redémarrage), la commande reste `pending` et le stock décrémenté.
+Un balayage répare cet état :
+
+| Moment | Ce qui se passe |
+|---|---|
+| au démarrage, **après** le seed | toutes les commandes `pending` plus vieilles que le TTL passent en `failed` et leur stock est restitué |
+| toutes les 30 s (tâche asyncio, annulée proprement à l'arrêt) | même balayage, pour un processus resté debout dont l'appel de paiement ne revient jamais |
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `SHOP_PENDING_TTL_SECONDS` | `120` | âge au-delà duquel une réservation est expirée |
+| `SHOP_PENDING_SWEEP_SECONDS` | `30` | période du balayage périodique |
+
+L'expiration est **atomique et idempotente** : `UPDATE orders SET
+status = 'failed' WHERE reference = ? AND status = 'pending'` d'abord, puis
+restitution du stock **seulement si une ligne a changé**. Deux balayages
+concurrents, ou un second passage, ne restituent jamais deux fois. Un
+`payment_event` de motif `expired` est écrit, avec la référence et le TTL.
+
+**Réconciliation.** Si le paiement local est déjà `paid` (timeout HTTP alors
+que `payment-api` a encaissé), le stock n'est pas restitué : la vente est
+réelle.
+
+* commande encore `pending` → elle est promue `paid`, sans toucher au stock ;
+* commande déjà `failed` → son stock a été rendu par le chemin d'échec, on ne
+  le rend pas une seconde fois ; elle reste `failed` et le remboursement est
+  manuel (hors périmètre, voir §6).
+
+Dans les deux cas un événement `reconciled` est écrit une seule fois et un
+avertissement part dans les logs. Aucun écart n'est tu.
+
+### Images produit
+
+Les six articles du catalogue ont une image SVG locale, servie par le montage
+`/static` :
+
+```
+services/shop-api/static/products/TERM-01.svg
+services/shop-api/static/products/RING-24.svg
+…
+GET /static/products/TERM-01.svg   → 200 image/svg+xml
+```
+
+`GET /products` expose `image_url = "/static/products/<SKU>.svg"`. C'est un
+**chemin relatif à l'API** : le front le préfixe par l'URL de base de la
+boutique (`http://localhost:8087` + `image_url`). Aucune URL absolue n'est
+stockée, pour que le même enregistrement fonctionne en local et derrière un
+reverse proxy. Le montage est **fail-soft** : si le dossier `static/` manque,
+le service démarre quand même et les images répondent `404`.
 
 ---
 
@@ -119,5 +172,6 @@ depuis « Habilitations → Boutique ».
 |---|---|---|
 | pas de compte client | le `customer_ref` est un capability token, suffisant pour un SI fictif | ici |
 | pas de remboursement | hors périmètre de la démonstration ; le stock est restitué sur échec | ici |
-| images produit non servies | `image_url` existe, aucun stockage de fichiers | `TODO.md` §0.5.2 |
+| paiement `paid` + commande `failed` | signalé (`reconciled`), stock non restitué deux fois, remboursement manuel | ici |
+| panier non relâché à l'expiration | le client recrée un panier ; la commande expirée reste lisible | ici |
 | pas de TVA / facturation | SI fictif, montants en centimes | ici |

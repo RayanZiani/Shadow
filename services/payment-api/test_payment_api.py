@@ -15,12 +15,27 @@ Ces tests couvrent les propriétés que la démonstration exploite réellement :
 La chaîne cryptographique (signature, key image, audit view-only) est testée
 séparément dans `test_crypto_flow.py`, qui parle au vrai noyau Rust.
 """
+import asyncio
 import statistics
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 import main
+
+
+@pytest.fixture(autouse=True)
+def _etat_paiement_propre():
+    """Isole l'idempotence et le limiteur entre tests (état global)."""
+    main._forget_payments()
+    with main._tx_pay_hits_lock:
+        main._tx_pay_hits.clear()
+    yield
+    main._forget_payments()
+    with main._tx_pay_hits_lock:
+        main._tx_pay_hits.clear()
 
 
 @pytest.fixture()
@@ -37,11 +52,12 @@ def client(monkeypatch):
 
     monkeypatch.setattr(main, "_report_success_tx", fake_report)
 
-    async def fake_mint(count, internal=False):
+    async def fake_mint(count, internal=False, amount=None):
+        created = []
         for _ in range(count):
             main._registry_seq += 1
             output_id = f"mint_{main._registry_seq}"
-            main.OUTPUTS[output_id] = {
+            output = {
                 "id": output_id,
                 "age_days": 3.0 if not internal else 0.01,
                 "one_time_public_key_hex": "aa" * 32,
@@ -49,9 +65,17 @@ def client(monkeypatch):
                 "encrypted_amount_hex": "cc" * 8,
             }
             if internal:
-                main.OUTPUTS[output_id]["internal"] = True
+                output["internal"] = True
+            with main._outputs_lock:
+                main.OUTPUTS[output_id] = output
+            created.append(output_id)
+        return created
 
     monkeypatch.setattr(main, "_mint", fake_mint)
+    # Journal en mémoire : un test ne doit jamais écrire dans un PostgreSQL
+    # réel, même si `DATABASE_URL` traîne dans l'environnement.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(main, "REGISTRY", main.RegistryStore())
     # Les endpoints /admin/* exigent le jeton de service (fail-closed sinon).
     monkeypatch.setenv("SERVICE_TOKEN", "jeton-de-test")
     return TestClient(main.app, headers={"X-Service-Token": "jeton-de-test"})
@@ -71,6 +95,7 @@ def _register(n: int = 50) -> None:
         }
     main.spent_key_images.clear()
     main.spent_output_ids.clear()
+    main._probe_outputs.clear()
 
 
 def test_decoys_biaises_vers_les_recents(client):
@@ -182,6 +207,16 @@ def test_healthz_expose_l_etat_du_noyau_crypto(client):
     assert "crypto_last_error" in body
 
 
+def test_healthz_expose_les_compteurs_du_registre(client, monkeypatch):
+    """§0.6.2 : les pertes et tentatives de reconnexion sont publiées."""
+    monkeypatch.setattr(main.REGISTRY, "lost_writes", 7)
+    monkeypatch.setattr(main.REGISTRY, "reconnect_attempts", 3)
+    registry = client.get("/healthz").json()["registry"]
+    assert registry["lost_writes"] == 7
+    assert registry["reconnect_attempts"] == 3
+    assert "durable" in registry
+
+
 def test_anneau_trop_grand_refuse(client):
     """F5 : un anneau non borné saturait le CPU (vérification linéaire en N).
 
@@ -189,9 +224,10 @@ def test_anneau_trop_grand_refuse(client):
     pour occuper le noyau. Le plafond est une mesure de disponibilité, pas de
     confidentialité.
 
-    Le test utilise des identifiants **réels** : avec des identifiants inconnus,
-    le refus viendrait de la validation des leurres et ne prouverait rien sur
-    le plafond.
+    Le plafond est désormais appliqué par Pydantic (`max_length=64`), donc
+    AVANT le handler et avant toute recherche dans le registre : le refus est
+    un 422 de validation. Le test utilise des identifiants **réels** pour
+    prouver que le refus ne vient pas de la validation des leurres.
     """
     _register(100)
     ids = list(main.OUTPUTS)
@@ -199,8 +235,8 @@ def test_anneau_trop_grand_refuse(client):
         "/tx/submit",
         json={"real_output_id": ids[0], "decoy_ids": ids[1:70]},
     )
-    assert response.status_code == 400
-    assert "trop grand" in response.json()["detail"], response.json()
+    assert response.status_code == 422, response.json()
+    assert "64" in str(response.json()["detail"]), response.json()
 
     # Juste sous le plafond, la requête n'est pas refusée pour sa taille :
     # elle passe la validation des leurres (le reste dépend du noyau crypto).
@@ -208,6 +244,7 @@ def test_anneau_trop_grand_refuse(client):
         "/tx/submit",
         json={"real_output_id": ids[0], "decoy_ids": ids[1:60]},
     )
+    assert under.status_code != 422
     assert "trop grand" not in str(under.json().get("detail", ""))
 
 
@@ -338,3 +375,296 @@ def test_le_pin_non_ascii_est_compte_comme_un_echec(client):
     # Et un PIN correct reste accepté : on n'a pas cassé la fonctionnalité.
     assert client.post("/pin/verify", json={"pin": main.PIN_CODE}).status_code == 200
     main._pin_state.update(failures=0, locked_until=0.0)
+
+
+# ---------------------------------------------------------------------------
+# §0.6.3 — snapshot sous verrou
+# ---------------------------------------------------------------------------
+def test_le_snapshot_survit_a_une_mutation_concurrente(client):
+    """200 itérations pendant qu'un thread ajoute/retire : aucune exception.
+
+    Sans `_snapshot_outputs()`, `/metrics` ou `/decoys` itéraient le dict
+    pendant que `_mint` le mutait depuis la boucle : `RuntimeError: dictionary
+    changed size during iteration` sous scrape Prometheus + sonde.
+    """
+    _register(50)
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def mutateur():
+        index = 0
+        while not stop.is_set():
+            index += 1
+            output_id = f"concurrent_{index}"
+            with main._outputs_lock:
+                main.OUTPUTS[output_id] = {
+                    "id": output_id,
+                    "age_days": 1.0,
+                    "one_time_public_key_hex": "aa" * 32,
+                    "tx_public_key_hex": "bb" * 32,
+                    "encrypted_amount_hex": "cc" * 8,
+                }
+            with main._outputs_lock:
+                main.OUTPUTS.pop(output_id, None)
+            # Laisse le GIL aux autres threads : sans cela, un thread qui
+            # tourne en boucle affame TestClient (mesuré : 1 s par requête).
+            time.sleep(0.001)
+
+    thread = threading.Thread(target=mutateur)
+    thread.start()
+    try:
+        for iteration in range(200):
+            snapshot = main._snapshot_outputs()
+            assert isinstance(snapshot, list)
+            # On itère comme le font /metrics et /decoys.
+            assert all("id" in output for output in snapshot)
+            main._count_unspent()
+            if iteration % 10 == 0:
+                assert client.get("/metrics").status_code == 200
+    except BaseException as exc:  # noqa: BLE001 - on veut le voir échouer
+        errors.append(exc)
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert not errors, errors
+
+
+# ---------------------------------------------------------------------------
+# §0.6.6 — decoy_ids : plafond AVANT la recherche des inconnus
+# ---------------------------------------------------------------------------
+def test_65_leurres_sont_refuses_avant_toute_recherche(client):
+    """65 identifiants INCONNUS : refus 422 immédiat, sans parcourir le registre.
+
+    Avant, la recherche des inconnus passait d'abord : 1 million d'ids coûtait
+    1 million de lookups avant le plafond. La validation Pydantic tranche
+    maintenant avant le handler.
+    """
+    _register(100)
+    started = time.perf_counter()
+    response = client.post(
+        "/tx/submit",
+        json={
+            "real_output_id": "test_0",
+            "decoy_ids": [f"inconnu_{i}" for i in range(65)],
+        },
+    )
+    elapsed = time.perf_counter() - started
+    # 422 de validation : on ne dit même pas quels leurres sont inconnus.
+    assert response.status_code == 422, response.json()
+    assert elapsed < 1.0, f"refus trop lent ({elapsed:.3f} s) : le registre a été parcouru"
+
+
+# ---------------------------------------------------------------------------
+# §0.6.6 — le pool de leurres se reconstitue après les quarantaines
+# ---------------------------------------------------------------------------
+def test_les_quarantaines_repetees_ne_vident_pas_le_pool(client, monkeypatch):
+    """Après ~20 incidents, `_replenish_pool` n'était appelé que par
+    `/outputs?unspent=true` : `/decoys` puis `/tx/pay` répondaient 502 en boucle.
+    """
+    _register(400)
+    for _ in range(20):
+        assert client.post("/admin/quarantine-outputs").status_code == 200
+
+    decoys = client.get("/decoys", params={"count": 10}).json()["decoys"]
+    assert len(decoys) == 10, "le pool de leurres n'a pas été reconstitué"
+    assert main._count_unspent() >= main.MIN_UNSPENT
+
+    # Et un paiement ne finit pas en 502 faute de leurres.
+    calls = []
+
+    async def fake_submit(output_id, amount):
+        calls.append(output_id)
+        return {
+            "amount": amount,
+            "key_image": "ki_pool",
+            "ring_size": 11,
+            "balance_ok": True,
+            "signature_scheme": "bLSAG",
+        }
+
+    monkeypatch.setattr(main, "_submit_payment", fake_submit)
+    paid = client.post("/tx/pay", json={"amount": 7, "reference": "pool-1"})
+    assert paid.status_code == 200, paid.json()
+    assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# §0.6.1 — /tx/pay idempotent par référence
+# ---------------------------------------------------------------------------
+def _stub_payment(monkeypatch, calls):
+    async def fake_submit(output_id, amount):
+        calls.append((output_id, amount))
+        return {
+            "amount": amount,
+            "key_image": f"ki_{len(calls)}",
+            "ring_size": 11,
+            "balance_ok": True,
+            "signature_scheme": "bLSAG",
+        }
+
+    monkeypatch.setattr(main, "_submit_payment", fake_submit)
+
+
+def test_deux_appels_avec_la_meme_reference_ne_paient_qu_une_fois(client, monkeypatch):
+    _register(20)
+    calls: list[tuple[str, int]] = []
+    _stub_payment(monkeypatch, calls)
+
+    first = client.post("/tx/pay", json={"amount": 42, "reference": "cmd-42"})
+    second = client.post("/tx/pay", json={"amount": 42, "reference": "cmd-42"})
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["key_image"] == second.json()["key_image"]
+    assert first.json()["replayed"] is False
+    assert second.json()["replayed"] is True
+    assert len(calls) == 1, "un second paiement a été émis pour la même référence"
+    assert second.json()["amount"] == 42
+
+
+def test_deux_rejeux_simultanes_ne_paient_qu_une_fois(client, monkeypatch):
+    """Course réelle : deux requêtes simultanées, même référence."""
+    import httpx
+
+    _register(20)
+    calls: list[str] = []
+
+    async def slow_submit(output_id, amount):
+        calls.append(output_id)
+        await asyncio.sleep(0.05)  # ouvre la fenêtre de course
+        return {
+            "amount": amount,
+            "key_image": "ki_concurrent",
+            "ring_size": 11,
+            "balance_ok": True,
+            "signature_scheme": "bLSAG",
+        }
+
+    monkeypatch.setattr(main, "_submit_payment", slow_submit)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", timeout=30.0
+        ) as http:
+            payload = {"amount": 42, "reference": "cmd-concurrent"}
+            return await asyncio.gather(
+                http.post("/tx/pay", json=payload),
+                http.post("/tx/pay", json=payload),
+            )
+
+    first, second = asyncio.run(scenario())
+    assert first.status_code == second.status_code == 200
+    assert first.json()["key_image"] == second.json()["key_image"]
+    assert sorted([first.json()["replayed"], second.json()["replayed"]]) == [False, True]
+    assert len(calls) == 1, "deux paiements émis pour la même référence simultanée"
+
+
+def test_une_reference_reutilisee_avec_un_autre_montant_est_refusee(client, monkeypatch):
+    _register(20)
+    calls: list[tuple[str, int]] = []
+    _stub_payment(monkeypatch, calls)
+
+    assert client.post("/tx/pay", json={"amount": 42, "reference": "cmd-43"}).status_code == 200
+    conflict = client.post("/tx/pay", json={"amount": 43, "reference": "cmd-43"})
+    assert conflict.status_code == 409, conflict.json()
+    assert len(calls) == 1
+
+
+def test_un_rejeu_apres_perte_de_la_memoire_est_rejoue_depuis_le_journal(
+    client, monkeypatch
+):
+    """Le repli PostgreSQL : la mémoire est vidée, le journal se souvient."""
+    _register(20)
+    calls: list[tuple[str, int]] = []
+    _stub_payment(monkeypatch, calls)
+    record = {
+        "key_image": "ki_journal",
+        "ring_size": 11,
+        "amount": 42,
+        "created_at": 123.0,
+    }
+    monkeypatch.setattr(main.REGISTRY, "load_payment", lambda reference: record)
+    monkeypatch.setattr(main.REGISTRY, "save_payment", lambda *args, **kwargs: None)
+
+    replay = client.post("/tx/pay", json={"amount": 42, "reference": "cmd-44"})
+    assert replay.status_code == 200, replay.json()
+    assert replay.json()["key_image"] == "ki_journal"
+    assert replay.json()["replayed"] is True
+    assert calls == [], "un paiement a été émis malgré un résultat déjà journalisé"
+
+
+# ---------------------------------------------------------------------------
+# §0.6.6 — rate limit de /tx/pay
+# ---------------------------------------------------------------------------
+def test_tx_pay_est_rate_limite_par_ip(client, monkeypatch):
+    _register(20)
+    calls: list[tuple[str, int]] = []
+    _stub_payment(monkeypatch, calls)
+    monkeypatch.setattr(main, "TX_PAY_RATE_LIMIT", 2.0)
+
+    assert client.post("/tx/pay", json={"amount": 5, "reference": "rl-1"}).status_code == 200
+    assert client.post("/tx/pay", json={"amount": 5, "reference": "rl-2"}).status_code == 200
+    third = client.post("/tx/pay", json={"amount": 5, "reference": "rl-3"})
+    assert third.status_code == 429, third.json()
+    assert int(third.headers["Retry-After"]) >= 1
+    assert len(calls) == 2
+
+
+def test_tx_pay_rate_limit_est_desactive_par_defaut(client, monkeypatch):
+    _register(20)
+    calls: list[tuple[str, int]] = []
+    _stub_payment(monkeypatch, calls)
+    monkeypatch.delenv("TX_PAY_RATE_LIMIT", raising=False)
+    # Absent = 0 = désactivé (les mesures de charge ne doivent pas être faussées).
+    assert main._env_float("TX_PAY_RATE_LIMIT", 0.0) == 0.0
+    monkeypatch.setattr(main, "TX_PAY_RATE_LIMIT", 0.0)
+
+    for index in range(10):
+        response = client.post("/tx/pay", json={"amount": 5, "reference": f"off-{index}"})
+        assert response.status_code == 200, response.json()
+
+
+# ---------------------------------------------------------------------------
+# §0.6.6 — la sonde n'accumule pas ses outputs internes
+# ---------------------------------------------------------------------------
+def test_les_outputs_internes_de_la_sonde_sont_bornes(client, monkeypatch):
+    """~21 600 outputs/jour n'étaient jamais retirés : le registre grossissait
+    sans fin, et `/metrics` avec lui."""
+    _register(10)
+    main._probe_outputs.clear()
+    monkeypatch.setattr(main, "PROBE_OUTPUT_RETENTION", 5)
+
+    async def fake_submit_probe(probe_id):
+        return 200
+
+    monkeypatch.setattr(main, "_submit_probe", fake_submit_probe)
+
+    for _ in range(20):
+        asyncio.run(main._auto_probe_once())
+
+    internes = [o for o in main._snapshot_outputs() if o.get("internal")]
+    assert len(internes) <= 5, f"{len(internes)} outputs internes conservés"
+    assert len(main._probe_outputs) <= 5
+    assert main.auto_probe_status["ok"] is True
+
+
+def test_la_purge_conserve_les_outputs_internes_les_plus_recents(client, monkeypatch):
+    """Au redémarrage, un registre déjà pollué est ramené sous la borne."""
+    _register(0)
+    for index in range(10):
+        output_id = f"output_{100 + index}"
+        main.OUTPUTS[output_id] = {
+            "id": output_id,
+            "age_days": 0.01,
+            "internal": True,
+            "one_time_public_key_hex": "aa" * 32,
+            "tx_public_key_hex": "bb" * 32,
+            "encrypted_amount_hex": "cc" * 8,
+        }
+    monkeypatch.setattr(main, "PROBE_OUTPUT_RETENTION", 3)
+
+    retires = main._prune_probe_outputs()
+
+    assert len(retires) == 7
+    restants = [o["id"] for o in main._snapshot_outputs() if o.get("internal")]
+    assert restants == ["output_107", "output_108", "output_109"]

@@ -36,8 +36,52 @@ from rag import Retriever, build_index, extractive_answer, tokenize  # noqa: E40
 
 
 @pytest.fixture(scope="module")
-def index():
-    """Index construit sur les vrais documents du dépôt."""
+def corpus(tmp_path_factory):
+    """Corpus CONTRÔLÉ pour les tests de classement.
+
+    Les documents du dépôt changent à chaque session. Un test de rang qui
+    dépend de leur contenu exact casse dès qu'une phrase est ajoutée ailleurs
+    (constaté deux fois : `DEMO.md` puis `COMPTE-RENDU.md` ont déplacé
+    `RAPPORT.md` hors du top 4 sans que le retrieval ait régressé).
+
+    On copie donc dans un dossier temporaire les documents qui portent la
+    réponse, plus un leurre sans vocabulaire commun. La couverture du corpus
+    réel est vérifiée séparément, par `test_lindex_couvre_les_documents_du_depot`.
+    """
+    root = tmp_path_factory.mktemp("corpus-rag")
+    docs = root / "docs"
+    docs.mkdir()
+    # Arborescence identique à la production (`docs/RAPPORT.md`) : les
+    # citations produites par le mode extractif gardent le même chemin.
+    for rel in (
+        "docs/RAPPORT.md",
+        "docs/DEMO.md",
+        "docs/SECURITE.md",
+        "docs/GOUVERNANCE.md",
+    ):
+        source = ROOT / rel
+        if source.exists():
+            (docs / source.name).write_text(
+                source.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+    (root / "annexe-sans-rapport.md").write_text(
+        "# Annexe\n\n"
+        "Cette annexe parle de jardinage, de brouette et de compost. "
+        "Aucun terme commun avec la mesure de durée de reprise.\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+@pytest.fixture(scope="module")
+def index(corpus):
+    """Index construit sur le corpus contrôlé (stable d'une session à l'autre)."""
+    return build_index(corpus)
+
+
+@pytest.fixture(scope="module")
+def real_index():
+    """Index du dépôt réel : sert à vérifier la COUVERTURE, pas le classement."""
     return build_index(ROOT)
 
 
@@ -67,12 +111,13 @@ def client(index, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Indexation
 # ---------------------------------------------------------------------------
-def test_lindex_couvre_les_documents_du_depot(index):
-    sources = {chunk["source"] for chunk in index["chunks"]}
+def test_lindex_couvre_les_documents_du_depot(real_index):
+    """Le corpus livré dans l'image contient bien le dossier et les deux README."""
+    sources = {chunk["source"] for chunk in real_index["chunks"]}
     assert any("RAPPORT.md" in source for source in sources)
     assert any("DEMO.md" in source for source in sources)
-    assert len(index["chunks"]) > 100
-    assert index["documents"] >= 5
+    assert len(real_index["chunks"]) > 100
+    assert real_index["documents"] >= 5
 
 
 def test_le_decoupage_conserve_le_titre_de_section(index):

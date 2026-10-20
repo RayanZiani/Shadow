@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import time
 
 import httpx
 import pytest
@@ -569,3 +570,229 @@ def _admin_headers() -> dict:
 
     token = os.environ.get("SERVICE_TOKEN", "").strip()
     return {"X-Service-Token": token} if token else {}
+
+
+# ---------------------------------------------------------------------------
+# Images produit : fichiers servis localement, URL relative à l'API
+# ---------------------------------------------------------------------------
+SEEDED_SKUS = {"TERM-01", "RING-24", "HSM-CARD", "SENSOR-01", "VAULT-LIC", "AUDIT-J"}
+
+
+def test_les_images_des_six_articles_sont_servies(client):
+    """Chaque article seedé a une image réelle, servie par `/static`."""
+    products = client.get("/products").json()["products"]
+    assert {product["sku"] for product in products} & SEEDED_SKUS == SEEDED_SKUS
+
+    for sku in sorted(SEEDED_SKUS):
+        product = _product(client, sku)
+        # Chemin relatif à l'API, pas une URL absolue : c'est le front qui
+        # préfixe avec l'URL de base de la boutique.
+        assert product["image_url"] == f"/static/products/{sku}.svg"
+        response = client.get(product["image_url"])
+        assert response.status_code == 200, (sku, response.status_code)
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert response.content.lstrip().startswith(b"<svg")
+
+
+def test_le_catalogue_expose_une_image_pour_chaque_article(client):
+    products = client.get("/products").json()["products"]
+    assert len(products) >= 6
+    assert all(product["image_url"] for product in products), [
+        product["sku"] for product in products if not product["image_url"]
+    ]
+
+
+def test_le_montage_statique_survit_a_un_dossier_absent(tmp_path):
+    """Fail-soft : un déploiement sans le dossier static démarre quand même.
+
+    `StaticFiles(check_dir=False)` évite le crash au démarrage ; les images
+    répondent alors 404, et le reste du service fonctionne.
+    """
+    application = main.create_app(
+        database_url=f"sqlite:///{tmp_path / 'shop.db'}",
+        static_dir=tmp_path / "dossier-absent",
+    )
+    try:
+        with TestClient(application) as client:
+            assert client.get("/healthz").status_code == 200
+            assert client.get("/products").status_code == 200
+            assert client.get("/static/products/TERM-01.svg").status_code == 404
+    finally:
+        application.state.db.close()
+
+
+# ---------------------------------------------------------------------------
+# Balayage des commandes restées `pending` (§0.6.1)
+# ---------------------------------------------------------------------------
+def _insert_order(db, reference, status, created_at, items, payment_status="pending"):
+    """Insère une commande + paiement + lignes, comme le ferait `/checkout`."""
+    total = sum(int(product["price_cents"]) * quantity for product, quantity in items)
+    order_id = db.run(
+        "INSERT INTO orders(reference, customer_ref, status, total_cents, created_at) "
+        "VALUES(?,?,?,?,?) RETURNING id",
+        (reference, "client-" + "a" * 24, status, total, created_at),
+        returning=True,
+    )
+    for product, quantity in items:
+        db.run(
+            "INSERT INTO order_items(order_id, product_id, sku, name, "
+            "unit_price_cents, quantity) VALUES(?,?,?,?,?,?)",
+            (
+                order_id,
+                product["id"],
+                product["sku"],
+                product["name"],
+                product["price_cents"],
+                quantity,
+            ),
+        )
+    payment_id = db.run(
+        "INSERT INTO payments(order_id, provider, amount_cents, status, created_at) "
+        "VALUES(?,?,?,?,?) RETURNING id",
+        (order_id, "monero-blsag", total, payment_status, created_at),
+        returning=True,
+    )
+    db.run(
+        "INSERT INTO payment_events(payment_id, event, detail, created_at) VALUES(?,?,?,?)",
+        (payment_id, "created", "{}", created_at),
+    )
+    return order_id, payment_id
+
+
+def test_le_ttl_de_reservation_est_configurable(monkeypatch):
+    monkeypatch.delenv("SHOP_PENDING_TTL_SECONDS", raising=False)
+    assert main._pending_ttl_seconds() == 120.0
+    monkeypatch.setenv("SHOP_PENDING_TTL_SECONDS", "5")
+    assert main._pending_ttl_seconds() == 5.0
+    # Une valeur absurde ne casse pas le démarrage : retour au défaut, tracé.
+    monkeypatch.setenv("SHOP_PENDING_TTL_SECONDS", "n'importe quoi")
+    assert main._pending_ttl_seconds() == 120.0
+
+
+def test_le_balayage_expire_une_commande_pending_et_restitue_le_stock(app, client):
+    """Le scénario `kill -9` : commande pending, stock décrémenté, rien ne répare."""
+    db = app.state.db
+    product = _product(client, "RING-24")
+    stock_initial = product["stock"]
+
+    # Réservation du stock puis mort du processus avant l'appel de paiement.
+    db.run(
+        "UPDATE products SET stock = stock - 2 WHERE id = ?",
+        (product["id"],),
+    )
+    _, payment_id = _insert_order(
+        db,
+        "CMD-ORPHELIN",
+        "pending",
+        time.time() - 3600,
+        [(product, 2)],
+    )
+
+    result = main.sweep_pending_orders(db, ttl_seconds=120)
+    assert "CMD-ORPHELIN" in result["expired"]
+
+    order = db.one("SELECT * FROM orders WHERE reference = ?", ("CMD-ORPHELIN",))
+    assert order["status"] == "failed"
+    assert _product(client, "RING-24")["stock"] == stock_initial
+
+    payment = db.one("SELECT * FROM payments WHERE id = ?", (payment_id,))
+    assert payment["status"] == "failed"
+    events = db.query(
+        "SELECT event, detail FROM payment_events WHERE payment_id = ? ORDER BY id",
+        (payment_id,),
+    )
+    assert events[-1]["event"] == "expired"
+    assert '"reason": "expired"' in events[-1]["detail"]
+
+    # Idempotence : un second balayage ne restitue pas le stock une 2e fois.
+    second = main.sweep_pending_orders(db, ttl_seconds=120)
+    assert second["expired"] == []
+    assert _product(client, "RING-24")["stock"] == stock_initial
+    expired_events = [
+        event
+        for event in db.query(
+            "SELECT event FROM payment_events WHERE payment_id = ?", (payment_id,)
+        )
+        if event["event"] == "expired"
+    ]
+    assert len(expired_events) == 1
+
+
+def test_le_balayage_ne_touche_pas_une_commande_recente(app, client):
+    db = app.state.db
+    product = _product(client, "SENSOR-01")
+    stock_initial = product["stock"]
+    db.run("UPDATE products SET stock = stock - 1 WHERE id = ?", (product["id"],))
+    _insert_order(
+        db,
+        "CMD-RECENTE",
+        "pending",
+        time.time(),
+        [(product, 1)],
+    )
+
+    result = main.sweep_pending_orders(db, ttl_seconds=120)
+    assert result == {"expired": [], "reconciled": []}
+    assert db.one("SELECT status FROM orders WHERE reference = ?", ("CMD-RECENTE",))[
+        "status"
+    ] == "pending"
+    assert _product(client, "SENSOR-01")["stock"] == stock_initial - 1
+
+
+def test_le_balayage_au_demarrage_repare_une_commande_orpheline(app):
+    """Le `lifespan` balaie après le seed : redémarrer suffit à réparer."""
+    db = app.state.db
+    main._seed_catalog(db)
+    product = db.one("SELECT * FROM products WHERE sku = 'TERM-01'")
+    stock_initial = int(product["stock"])
+    db.run("UPDATE products SET stock = stock - 1 WHERE id = ?", (product["id"],))
+    _insert_order(
+        db,
+        "CMD-AVANT-KILL",
+        "pending",
+        time.time() - 600,
+        [(product, 1)],
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+        order = db.one("SELECT status FROM orders WHERE reference = ?", ("CMD-AVANT-KILL",))
+        assert order["status"] == "failed"
+        assert int(db.one("SELECT stock FROM products WHERE id = ?", (product["id"],))["stock"]) == stock_initial
+
+
+def test_la_reconciliation_ne_restitue_pas_deux_fois_un_paiement_reussi(app, client):
+    """Paiement `paid` localement + commande `failed` : pas de double restitution."""
+    db = app.state.db
+    product = _product(client, "HSM-CARD")
+    stock_initial = product["stock"]  # stock déjà restitué par le chemin d'échec
+    _, payment_id = _insert_order(
+        db,
+        "CMD-RECONCILIE",
+        "failed",
+        time.time() - 3600,
+        [(product, 1)],
+        payment_status="paid",
+    )
+
+    result = main.sweep_pending_orders(db, ttl_seconds=120)
+    assert "CMD-RECONCILIE" in result["reconciled"]
+    # Le stock n'a pas bougé : il avait déjà été rendu.
+    assert _product(client, "HSM-CARD")["stock"] == stock_initial
+    # La commande reste `failed` (remboursement hors périmètre), mais l'écart
+    # est journalisé une seule fois.
+    assert db.one("SELECT status FROM orders WHERE reference = ?", ("CMD-RECONCILIE",))[
+        "status"
+    ] == "failed"
+
+    second = main.sweep_pending_orders(db, ttl_seconds=120)
+    assert second["reconciled"] == []
+    events = [
+        event
+        for event in db.query(
+            "SELECT event FROM payment_events WHERE payment_id = ?", (payment_id,)
+        )
+        if event["event"] == "reconciled"
+    ]
+    assert len(events) == 1
+

@@ -11,6 +11,20 @@ const SHOP_BASE = import.meta.env.VITE_SHOP_BASE || "http://localhost:8087";
 
 export { SHOP_BASE };
 
+/**
+ * URL absolue d'une image produit.
+ *
+ * `image_url` est un chemin **relatif à l'API** (`/static/products/TERM-01.svg`,
+ * servi par `shop-api`) : on le préfixe par la base de la boutique, sans quoi le
+ * navigateur le chercherait sur l'origine du front (port 5173). Une URL déjà
+ * absolue est rendue telle quelle, pour ne pas casser un jour un CDN.
+ */
+export function productImageUrl(imageUrl) {
+  if (!imageUrl) return null;
+  if (/^https?:\/\//i.test(imageUrl)) return imageUrl;
+  return `${SHOP_BASE}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`;
+}
+
 export class ShopError extends Error {
   constructor(status, detail) {
     super(typeof detail === "string" ? detail : detail?.detail || `erreur ${status}`);

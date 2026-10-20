@@ -46,6 +46,254 @@ function Card({ title, children, className = "" }) {
   );
 }
 
+const ANSIBLE_MAX_LINES = 120;
+
+/** Heure courte pour le journal de la console. */
+function clockLabel(ms) {
+  if (!ms) return "--:--:--";
+  return new Date(ms).toLocaleTimeString();
+}
+
+/**
+ * Sortie Ansible → lignes affichables.
+ *
+ * `subprocess.run(capture_output=True)` ne produit pas de codes couleur, mais
+ * on les retire quand même : une sortie rejouée depuis un terminal coloré ne
+ * doit pas polluer la console. Les lignes vides finales sont coupées.
+ */
+function splitAnsibleOutput(text) {
+  const lines = String(text ?? "")
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(/\r/g, "")
+    .split("\n");
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  return lines;
+}
+
+/** Coloration minimale, calquée sur la sortie d'`ansible-playbook`. */
+function ansibleLineClass(line) {
+  if (/^TASK\b/.test(line)) return "text-amber-300 font-bold";
+  if (/^PLAY\b/.test(line)) return "text-emerald font-bold";
+  if (/^(fatal|failed|ERROR)\b/.test(line)) return "text-red-400 font-bold";
+  if (/^(changed|included)\b/.test(line)) return "text-emerald";
+  if (/^(ok|skipping)\b/.test(line)) return "text-page/70";
+  return "text-page/80";
+}
+
+/**
+ * Console du playbook Ansible (quadrant « remédiation »).
+ *
+ * Pendant `REMEDIATING`, `/history` est interrogé toutes les secondes ; le
+ * polling s'arrête dès que l'état quitte `REMEDIATING`, avec une dernière
+ * lecture à cet instant-là. L'extrait (`ansible_stdout_tail`) reste ensuite
+ * affiché avec `ansible_rc`.
+ *
+ * Deux limites sont assumées et visibles à l'écran :
+ *
+ * * `remediation-engine` n'ajoute l'entrée à `/history` qu'APRÈS le playbook
+ *   (`remediation_log.append` suit `_run_playbook`) : stdout n'est pas diffusé
+ *   tâche par tâche. En attendant l'extrait, la console affiche donc le journal
+ *   réel de l'incident (alertes corrélées, diagnostic, chrono), jamais du
+ *   contenu inventé ;
+ * * `/history` est une route publique (aucune dépendance `SERVICE_TOKEN`) :
+ *   aucun jeton de service n'est nécessaire — donc aucun secret dans le bundle.
+ *
+ * Si le moteur est injoignable, on l'écrit : pas d'écran vide, pas d'exception.
+ */
+function AnsibleConsole({ state, detail }) {
+  const [history, setHistory] = useState(null);
+  const [unreachable, setUnreachable] = useState(false);
+  const [startedAt, setStartedAt] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
+  const boxRef = useRef(null);
+
+  const running = state === "REMEDIATING";
+
+  // Chrono : la seule animation pendant l'exécution, et elle est réelle.
+  useEffect(() => {
+    if (!running) return undefined;
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [running]);
+
+  // Début de l'exécution observée : distingue l'extrait de CET incident de
+  // celui de l'incident précédent.
+  useEffect(() => {
+    setStartedAt(state === "REMEDIATING" ? Date.now() : null);
+    setNow(Date.now());
+  }, [state]);
+
+  // /history : polling 1 s pendant REMEDIATING, dernière lecture dès que l'état
+  // quitte REMEDIATING (c'est précisément là que l'entrée est écrite).
+  useEffect(() => {
+    if (
+      state !== "REMEDIATING" &&
+      state !== "RECOVERED_TX" &&
+      state !== "REMEDIATION_FAILED"
+    ) {
+      return undefined;
+    }
+    let cancelled = false;
+
+    const read = async () => {
+      try {
+        const response = await fetch(`${REMEDIATION_BASE}/history`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (cancelled) return;
+        setHistory(payload);
+        setUnreachable(false);
+      } catch {
+        // moteur coupé ou route absente : on le dit, on ne casse pas l'écran
+        if (!cancelled) setUnreachable(true);
+      }
+    };
+
+    read();
+    if (state !== "REMEDIATING") return () => { cancelled = true; };
+    const id = window.setInterval(read, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [state]);
+
+  const entries = Array.isArray(history?.entries) ? history.entries : [];
+  const latest = entries.length > 0 ? entries[entries.length - 1] : null;
+  const startedAtSeconds = startedAt ? startedAt / 1000 : null;
+  // L'entrée la plus récente appartient à cet incident si elle porte son
+  // horodatage — ou si l'on est déjà sorti de REMEDIATING, puisque le moteur
+  // l'écrit juste avant de publier l'état final.
+  const latestIsCurrent =
+    latest !== null &&
+    (state !== "REMEDIATING" ||
+      typeof latest.detected_at !== "number" ||
+      (startedAtSeconds !== null && latest.detected_at >= startedAtSeconds - 5));
+
+  const tail = latest
+    ? splitAnsibleOutput(latest.ansible_stdout_tail).slice(-ANSIBLE_MAX_LINES)
+    : [];
+
+  const elapsedSeconds = startedAt ? (now - startedAt) / 1000 : 0;
+  const rows = [];
+
+  // Si le moteur publiait un jour `ansible_stdout_tail` dans le détail SSE de
+  // REMEDIATING (aujourd'hui il ne le fait qu'à la fin, via /history), on
+  // l'afficherait tel quel : ce composant n'aurait pas à changer.
+  const liveTail = running
+    ? splitAnsibleOutput(detail?.ansible_stdout_tail).slice(-ANSIBLE_MAX_LINES)
+    : [];
+  const showJournal = running && liveTail.length === 0 && !latestIsCurrent;
+
+  if (liveTail.length > 0) {
+    liveTail.forEach((line, index) =>
+      rows.push({ key: `direct-${index}`, className: ansibleLineClass(line), text: line })
+    );
+  } else if (showJournal) {
+    const alerts = Array.isArray(detail?.alerts) ? detail.alerts : [];
+    alerts.forEach((alert, index) => {
+      const severity = alert.severity ? ` (${alert.severity})` : "";
+      rows.push({
+        key: `alerte-${index}`,
+        className: "text-page/70",
+        text: `[${clockLabel((alert.received_at ?? 0) * 1000)}] alerte ${index + 1}/${
+          alerts.length
+        } : ${alert.alertname ?? "?"}${severity}`,
+      });
+    });
+    if (detail?.diagnostic) {
+      rows.push({
+        key: "diagnostic",
+        className: "text-page/70",
+        text: `[${clockLabel(startedAt)}] diagnostic : ${detail.diagnostic}`,
+      });
+    }
+    rows.push({
+      key: "playbook",
+      className: "text-page/70",
+      text: `[${clockLabel(startedAt)}] ansible-playbook remediation_playbook.yml`,
+    });
+    rows.push({
+      key: "elapsed",
+      className: "text-amber-300",
+      text: `[${clockLabel(now)}] exécution en cours… ${elapsedSeconds.toFixed(1)} s`,
+    });
+    if (unreachable) {
+      rows.push({
+        key: "indisponible",
+        className: "text-red-400 font-bold",
+        text: "sortie du playbook indisponible — remediation-engine /history injoignable",
+      });
+    }
+    if (tail.length > 0) {
+      rows.push({
+        key: "separateur",
+        className: "text-page/40",
+        text: "— extrait de l'incident précédent —",
+      });
+      tail.forEach((line, index) =>
+        rows.push({ key: `precedent-${index}`, className: ansibleLineClass(line), text: line })
+      );
+    }
+  } else if (tail.length > 0) {
+    tail.forEach((line, index) =>
+      rows.push({ key: `sortie-${index}`, className: ansibleLineClass(line), text: line })
+    );
+  }
+
+  const emptyMessage = unreachable
+    ? "sortie du playbook indisponible — remediation-engine /history injoignable"
+    : running
+      ? "sortie du playbook indisponible pour l'instant — le moteur la publie à la fin de l'exécution"
+      : "aucun playbook exécuté pour l'instant";
+
+  let statusLabel = "en attente";
+  let statusClass = "text-ink/60";
+  if (unreachable) {
+    statusLabel = "indisponible";
+    statusClass = "text-crimson";
+  } else if (running) {
+    statusLabel = `en cours · ${elapsedSeconds.toFixed(1)} s`;
+    statusClass = "text-ink";
+  } else if (latestIsCurrent && latest?.ansible_rc !== undefined) {
+    statusLabel = `terminé · rc=${latest.ansible_rc}`;
+    statusClass = latest.ansible_rc === 0 ? "text-emerald" : "text-crimson";
+  }
+
+  // Défilement automatique vers le bas à chaque nouvelle ligne.
+  const signature = rows.map((row) => row.text).join("\n");
+  useEffect(() => {
+    const box = boxRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [signature]);
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-ink/70 text-xs font-bold uppercase tracking-wide">
+          Sortie du playbook
+        </p>
+        <p className={`text-[11px] font-mono font-bold ${statusClass}`}>{statusLabel}</p>
+      </div>
+      <div
+        ref={boxRef}
+        role="log"
+        className="mt-1 h-40 overflow-y-auto rounded-lg bg-ink px-3 py-2 font-mono text-[11px] leading-relaxed"
+      >
+        {rows.length === 0 ? (
+          <p className="text-page/50">{emptyMessage}</p>
+        ) : (
+          rows.map((row) => (
+            <p key={row.key} className={`whitespace-pre-wrap break-all ${row.className}`}>
+              {row.text || " "}
+            </p>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Anneau de LEDs en SVG : miroir exact de l'objet physique.
  * Même état, même séquence, même cadence. Si l'ESP32 est débranché, la démo
@@ -341,6 +589,7 @@ function Supervision({ user, onLogout, onOpenAdmin }) {
           {detail.ansible_rc !== undefined && (
             <p className="text-ink/60 text-xs font-mono mt-1">ansible rc={detail.ansible_rc}</p>
           )}
+          <AnsibleConsole state={systemState.state} detail={detail} />
           <div className="mt-3 pt-3 border-t border-rule">
             <p className="text-ink/70 text-xs font-bold uppercase tracking-wide">
               Audit view-only (DORA art. 19)

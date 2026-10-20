@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import threading
+import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 if str(HERE) in sys.path:
@@ -27,6 +29,7 @@ for _name in ("registry", "main", "config", "svc_auth"):
     if _file and pathlib.Path(_file).resolve().parent != HERE:
         del sys.modules[_name]
 
+import registry as registry_module  # noqa: E402
 from registry import RegistryStore  # noqa: E402
 
 
@@ -38,9 +41,17 @@ class FakeCursor:
 
     def execute(self, sql, params=None):
         self.connection.statements.append((sql, params))
-        if sql.strip().upper().startswith("SELECT ID, AGE_DAYS"):
+        upper = sql.strip().upper()
+        if "FROM REGISTRY_PAYMENTS" in upper:
+            row = self.connection.payments.get(params[0])
+            self._rows = [row] if row else []
+        elif upper.startswith("INSERT INTO REGISTRY_PAYMENTS"):
+            # `ON CONFLICT (reference) DO NOTHING` : le premier paiement fait foi.
+            self.connection.payments.setdefault(params[0], tuple(params[1:]))
+            self._rows = []
+        elif upper.startswith("SELECT ID, AGE_DAYS"):
             self._rows = list(self.connection.output_rows)
-        elif sql.strip().upper().startswith("SELECT KEY_IMAGE"):
+        elif upper.startswith("SELECT KEY_IMAGE"):
             self._rows = [(image,) for image in self.connection.key_images]
         else:
             self._rows = []
@@ -86,12 +97,16 @@ class FakeConnection:
         self.output_rows = output_rows or []
         self.key_images = key_images or []
         self.transactions: list[str] = []
+        self.payments: dict[str, tuple] = {}
 
     def cursor(self):
         return FakeCursor(self)
 
     def transaction(self):
         return FakeTransaction(self)
+
+    def close(self):
+        return None
 
 
 def _store_with(connection) -> RegistryStore:
@@ -100,6 +115,13 @@ def _store_with(connection) -> RegistryStore:
     store.available = True
     store.last_error = None
     store._conn = connection
+    store.lost_writes = 0
+    store.reconnect_attempts = 0
+    store._reconnect_delay = registry_module.RECONNECT_MIN_DELAY
+    # Pas de thread parasite dans les tests qui ne parlent pas de reconnexion.
+    store._next_reconnect_at = float("inf")
+    store._reconnecting = False
+    store._reconnect_guard = threading.Lock()
     return store
 
 
@@ -300,3 +322,153 @@ def test_une_erreur_d_ecriture_degrade_sans_lever():
     )
     assert store.available is False
     assert "connexion perdue" in (store.last_error or "")
+    # §0.6.2 : la perte n'est plus silencieuse.
+    assert store.lost_writes == 1
+
+
+# ---------------------------------------------------------------------------
+# §0.6.2 — reconnexion automatique et compteur de pertes
+# ---------------------------------------------------------------------------
+def _attendre(predicat, timeout=5.0):
+    fin = time.monotonic() + timeout
+    while time.monotonic() < fin:
+        if predicat():
+            return True
+        time.sleep(0.01)
+    return predicat()
+
+
+def test_la_reconnexion_restaure_available_et_compte_les_pertes(monkeypatch):
+    """Une coupure PostgreSQL ne doit plus être définitive.
+
+    `_degrade()` laissait `available=False` pour toujours : les key images
+    dépensées pendant la panne étaient perdues, et la double dépense redevenait
+    possible après redémarrage. Ici la connexion échoue puis réussit.
+    """
+    connexion = FakeConnection()
+    appels: list[str] = []
+
+    def fake_open(url):
+        appels.append(url)
+        if len(appels) == 1:
+            raise RuntimeError("base injoignable")
+        return connexion
+
+    monkeypatch.setattr(registry_module, "_open_connection", fake_open)
+    store = RegistryStore(url="postgresql://fake")
+    assert store.available is False
+    assert store.last_error and "injoignable" in store.last_error
+
+    # Deux écritures pendant l'indisponibilité : comptées, jamais levées.
+    store.save_spent("output_1", "aa" * 32, 1.0)
+    store.save_outputs(
+        [
+            {
+                "id": "output_2",
+                "age_days": 1.0,
+                "one_time_public_key_hex": "aa",
+                "tx_public_key_hex": "bb",
+                "encrypted_amount_hex": "cc",
+                "created_at": 1.0,
+            }
+        ]
+    )
+    assert store.lost_writes == 2
+    assert store.reconnect_attempts == 0
+    health = store.health()
+    assert health["durable"] is False
+    assert health["lost_writes"] == 2
+    assert health["reconnect_attempts"] == 0
+
+    # La fenêtre de backoff est écoulée : la tentative suivante réussit.
+    store._next_reconnect_at = 0.0
+    store.save_spent("output_3", "bb" * 32, 2.0)
+    assert store.lost_writes == 3
+    assert _attendre(lambda: store.available), "la reconnexion n'a jamais abouti"
+
+    health = store.health()
+    assert health["durable"] is True
+    assert health["backend"] == "postgresql"
+    assert health["reconnect_attempts"] == 1
+    assert health["lost_writes"] == 3
+    assert appels == ["postgresql://fake", "postgresql://fake"]
+    assert store._conn is connexion
+
+
+def test_une_reconnexion_ratee_ne_leve_pas_et_recule(monkeypatch):
+    def fake_open(url):
+        raise RuntimeError("toujours injoignable")
+
+    monkeypatch.setattr(registry_module, "_open_connection", fake_open)
+    store = RegistryStore(url="postgresql://fake")
+    assert store.available is False
+    delai_initial = store._reconnect_delay
+    store._next_reconnect_at = 0.0
+
+    store.save_spent("output_1", "aa" * 32, 1.0)  # déclenche une tentative
+    # Le backoff n'est doublé qu'à la FIN de la tentative ratée : on attend
+    # cette borne plutôt que le simple démarrage du thread (course).
+    assert _attendre(lambda: store._reconnect_delay > delai_initial)
+    assert store.reconnect_attempts >= 1
+    assert store.available is False
+    assert store.lost_writes == 1
+    # Backoff exponentiel borné : le prochain essai est repoussé.
+    assert store._next_reconnect_at > time.monotonic()
+
+
+def test_le_mode_memoire_ne_compte_pas_de_pertes(monkeypatch):
+    """Sans DATABASE_URL, il n'y a pas de panne transitoire : `durable: false`
+    suffit, `lost_writes` ne doit pas crier au loup."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    store = RegistryStore()
+    store.save_spent("output_1", "aa" * 32, 1.0)
+    store.save_outputs(
+        [
+            {
+                "id": "output_1",
+                "age_days": 1.0,
+                "one_time_public_key_hex": "aa",
+                "tx_public_key_hex": "bb",
+                "encrypted_amount_hex": "cc",
+                "created_at": 1.0,
+            }
+        ]
+    )
+    assert store.lost_writes == 0
+    assert store.health()["lost_writes"] == 0
+
+
+# ---------------------------------------------------------------------------
+# §0.6.1 — persistance des paiements idempotents
+# ---------------------------------------------------------------------------
+def test_les_paiements_sont_journalises_et_recharges():
+    connexion = FakeConnection()
+    store = _store_with(connexion)
+
+    store.save_payment("cmd-1", "ab" * 32, 11, 42, 123.0)
+    sql, params = connexion.statements[-1]
+    assert "INSERT INTO registry_payments" in sql
+    # Le premier paiement fait foi : un rejeu n'écrase pas la key image.
+    assert "ON CONFLICT (reference) DO NOTHING" in sql
+    assert params[0] == "cmd-1"
+
+    assert store.load_payment("cmd-1") == {
+        "key_image": "ab" * 32,
+        "ring_size": 11,
+        "amount": 42,
+        "created_at": 123.0,
+    }
+    assert store.load_payment("inconnue") is None
+
+
+def test_un_paiement_est_ecrit_meme_si_le_registre_est_degrade():
+    """Une référence sans journal reste servie depuis la mémoire, mais la
+    perte est comptée (jamais d'exception dans le paiement)."""
+    class BrokenConnection:
+        def cursor(self):
+            raise RuntimeError("connexion perdue")
+
+    store = _store_with(BrokenConnection())
+    store.save_payment("cmd-2", "cd" * 32, 11, 42, 1.0)
+    assert store.available is False
+    assert store.lost_writes == 1
