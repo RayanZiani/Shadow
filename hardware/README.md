@@ -3,6 +3,18 @@
 Document opérationnel. Le raisonnement et le rôle de l'objet sont dans
 [`docs/hardware/CONCEPT-PHYSIQUE.md`](../../docs/hardware/CONCEPT-PHYSIQUE.md).
 
+## 0. Deux objets distincts
+
+| Objet | Rôle | Dossier |
+|---|---|---|
+| Terminal à anneau WS2812 sur **ESP32** | miroir de l'état de la chaîne (attaque, remédiation, reprise) | `hardware/ring_signer_hsm/` (ce document) |
+| Bandeau **LED bicolore sur ESP8266** | miroir de l'**authentification du back-office** (visage, mot de passe) | [`led_bandeau_esp8266/`](led_bandeau_esp8266/) |
+
+Le second vient de la consigne additionnelle : identifiant → reconnaissance
+faciale → mot de passe, avec une LED rouge/verte et un ESP8266 en WiFi sur le
+point d'accès. Il est **indépendant** du premier : deux cartes, deux rôles, deux
+câbles USB. Aucun des deux n'est nécessaire à la démonstration.
+
 ## 1. Ce que tu as déjà, et comment l'utiliser
 
 | Élément | Usage retenu |
@@ -130,6 +142,8 @@ cadrage, la luminosité et le rythme sans toucher au PC attaquant.
 | 4 | pont arrêté puis relancé | resynchronisation via `/state`, pas de doublon |
 | 5 | `--replay` pendant 2 min | aucune LED figée, aucun reboot ESP32 |
 | 6 | écran éteint / LEDs à blanc | l'alim tient (pas de clignotement) |
+| 7 | **bandeau ESP8266** : parcours d'authentification complet | vert clignotant → vert fixe 30 s / rouge ×10 / rouge fixe 30 s (voir `led_bandeau_esp8266/README.md` §4) |
 
 Si le test 3 échoue, c'est un bug bloquant : l'objet ne doit **jamais** être
-nécessaire à la démo.
+nécessaire à la démo. Le test 7 suit la même règle : sans bandeau,
+l'authentification aboutit quand même.

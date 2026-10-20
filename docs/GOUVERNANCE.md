@@ -16,7 +16,7 @@
 | Élément | Valeur |
 |---|---|
 | Système étudié | Plateforme de paiement fictive à confidentialité cryptographique |
-| Mode de déploiement | `docker compose`, 14 services, un PC hôte |
+| Mode de déploiement | `docker compose`, 15 services, un PC hôte |
 | Périmètre technique | `services/*`, `front-dashboard`, `ansible/`, `hardware/` |
 | Périmètre organisationnel | Un consortium d'étudiants, un PC attaquant, un PC hôte |
 | Hors périmètre | Monero réel, réseau public, clients réels, données personnelles |
@@ -59,6 +59,8 @@ jour J. L'analyse ci-dessous le reflète.
 | BS12 | Gestion des secrets | `vault` (8200) | — |
 | BS13 | Authentification | `services/auth-service` (8082) | BS12 |
 | BS14 | Base de données | `db-postgres` | — |
+| BS15 | **Authentification forte du back-office** | `services/backoffice` (8086) + caméra USB | BS14 (SQLite), navigateur du PC hôte |
+| BS16 | **Bandeau LED d'état** | `hardware/led_bandeau_esp8266` + ESP8266 | WiFi du point d'accès, BS15 |
 
 ### 2.3 Événements redoutés
 
@@ -70,6 +72,8 @@ jour J. L'analyse ci-dessous le reflète.
 | ER4 | La remédiation ne se déclenche pas (panne silencieuse) | VM4 | 5 |
 | ER5 | L'attaquant n'est pas contenu et continue de taper | VM3, VM5 | 3 |
 | ER6 | L'auditabilité est perdue (aucune trace exploitable) | VM5 | 3 |
+| ER7 | **Un tiers accède au back-office avec un identifiant ou un mot de passe volé** | VM1, VM5 | 4 |
+| ER8 | **Un compte légitime est bloqué et la démonstration s'arrête** | VM3, VM4 | 3 |
 
 ---
 
@@ -186,6 +190,10 @@ L'ESP32 est débranché en pleine démonstration.
 | Fallback explicite, jamais silencieux | `/healthz` → `jwt_key_source` | — |
 | Aucun secret dans le dépôt | `.gitignore`, `.env.example` | — |
 | Rotation de clé par le playbook | étape 3, conditionnelle | dépend d'un token de service |
+| **Authentification à deux facteurs du back-office** | identifiant + visage (SFace) + mot de passe, `services/backoffice` | pas de détection de vivacité |
+| **Anti-bruteforce borné** | 2 échecs → 5 min, compteur en base, `Retry-After` | un déni de service ciblé reste possible (ER8) |
+| **Journal d'audit des tentatives** | table `audit`, écran « Habilitations » | pas d'export signé (hors périmètre) |
+| **Moindre privilège** | 3 rôles, dernier admin protégé, sessions révocables | pas de revue d'accès périodique |
 
 ---
 
@@ -200,6 +208,9 @@ L'ESP32 est débranché en pleine démonstration.
 | RR5 | AppRole Vault non provisionné | Certaine | 2 | Accepté en démo, écrit dans le playbook |
 | RR6 | Règles WAF limitées à l'âge des leurres | Moyenne | 2 | Accepté : le ML reste le détecteur, le WAF ne fait que filtrer au bord |
 | RR7 | Images Docker non épinglées par digest | Moyenne | 3 | Recommandé (§9) |
+| RR8 | **Pas de détection de vivacité faciale** : une photo imprimée passerait le facteur visage | Moyenne | 2 | **Accepté et documenté** (`/healthz` → `liveness: not_implemented`) ; le mot de passe reste exigé |
+| RR9 | **Blocage de 5 min exploitable en déni de service** : un tiers peut bloquer un compte connu | Faible | 2 | Accepté (imposé par la consigne) ; déblocage par un administrateur, alerte `ComptesBloques` |
+| RR10 | Back-office en HTTP sur `localhost` | Faible (trafic local) | 2 | Accepté en démo ; TLS recommandé en production |
 
 ---
 
@@ -216,6 +227,8 @@ L'ESP32 est débranché en pleine démonstration.
 | `waf` | **5 s** | perte du compteur de déception | La déception est réarmée par le playbook |
 | `front-dashboard` | **5 s** | n/a | Recalcule tout depuis SSE + `/score` |
 | `vault` | **60 s** | données persistées (`vault-data`) | Hors chemin critique de la démo |
+| `backoffice` | **15 s** | comptes, visages et blocages persistés (`bo-data`) | Un redémarrage ne perd ni les comptes ni les blocages |
+| Bandeau LED ESP8266 | **0** (non critique) | n/a | S'éteint s'il ne joint plus le back-office |
 | Terminal physique | **0** (non critique) | n/a | Miroir d'état, jamais nécessaire |
 
 **RTO agrégé de la chaîne P0 : 15 s** — contre 6,3 s mesurées en reprise

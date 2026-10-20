@@ -7,7 +7,8 @@ a servi à valider la chaîne — avec les équivalents Linux et Windows.
 > Ce qui a été validé sur ce poste : `docker compose up` complet (14 services),
 > noyau Rust compilé avec bLSAG, `tools/e2e_demo.py` trois fois de suite,
 > **79 tests automatisés**, Prometheus et Grafana provisionnés.
-> Voir §6 pour les chiffres mesurés.
+> Voir §6 pour les chiffres mesurés. Le back-office de la consigne
+> additionnelle ajoute un 15ᵉ service et **25 tests** (§8).
 
 ---
 
@@ -135,8 +136,9 @@ python3 -m venv .venv
 | waf | `services/waf/test_waf.py` (10) | âge médian des leurres, routage honeypot, **le client légitime n'est jamais dérouté**, reset |
 | shadow-api | `services/shadow-api/test_shadow_api.py` (4) | honeypot : jamais d'erreur visible, journal borné |
 | auth-service | `services/auth-service/test_auth_service.py` (5) | clé lue dans Vault, 503 si Vault muet, cache et rotation |
+| back-office | `services/backoffice/test_backoffice.py` (25) | parcours identifiant → visage → mot de passe, refus, blocage 5 min, LED, habilitations, audit |
 
-Soit **79 tests**. Les tests HTTP du noyau se déclarent ignorés si
+Soit **104 tests**. Les tests HTTP du noyau se déclarent ignorés si
 `docker compose` n'est pas démarré. `cargo test` est lancé par `run_tests.sh` si `cargo` est
 présent.
 
@@ -155,7 +157,9 @@ présent.
 | 9 | `python tools/attack.py all` | poison dérouté, replay 409, burst, malformed 400 sans panic |
 | 10 | `python tools/attack.py reset` | `deception: false` |
 | 11 | ouvrir `localhost:3001` | dashboard « RESILIENCE-ALPHA — état du service » avec 10 panneaux |
-| 12 | `curl -s localhost:9090/api/v1/targets` | 8 cibles, toutes `up` |
+| 12 | `curl -s localhost:9090/api/v1/targets` | 9 cibles, toutes `up` |
+| 13 | `python tools/backoffice_check.py` | 0 échec : moteur facial réel, administrateur enrôlé, LED protégée |
+| 14 | parcours visage + mot de passe dans le navigateur | vert clignotant → vert fixe 30 s → dashboard |
 
 ---
 
@@ -194,22 +198,31 @@ mesuré en recette, un trafic parfaitement légitime sortait à +5 σ.
 | Cible Prometheus `down` | service sans `/metrics` ou arrêté | `curl localhost:<port>/metrics` |
 | Toutes les attaques sont déroutées | déception restée armée | `python tools/attack.py reset` |
 | 409 en série sur `/tx/submit` | registre épuisé | redémarrer `payment-api` (le pool se réalimente aussi automatiquement) |
+| Back-office : « aucune caméra détectée » | webcam non branchée sur le PC hôte, ou déjà prise par Teams/Zoom | brancher la caméra sur l'hôte, fermer l'autre application, recharger la page |
+| Back-office : la caméra est refusée par le navigateur | page ouverte par une **IP LAN** (pas un contexte sécurisé) | ouvrir `http://localhost:5173`, pas `http://192.168.x.x:5173` |
+| Back-office : `bootstrap_required: true` | aucun administrateur avec visage | renseigner `BO_BOOTSTRAP_TOKEN`, ouvrir le dashboard, enrôler |
+| Back-office : `face_engine: unavailable` | modèles ONNX absents ou illisibles | `docker compose build backoffice` (le build les télécharge et vérifie leur SHA-256) |
+| Back-office : `demo_only: true` | `BO_FACE_ENGINE=stub` | remettre `opencv` : le stub ne reconnaît aucun visage réel |
+| Back-office : compte bloqué | 2 échecs (visage ou mot de passe) | attendre 5 min ou débloquer depuis l'écran « Habilitations » |
+| Bandeau LED éteint en permanence | ESP hors WiFi, ou `LED_DEVICE_TOKEN` différent | `pio device monitor` sur la carte, comparer avec `.env` |
 
 ---
 
 ## 6. Résultats mesurés sur ce poste (macOS, M3 Pro, 36 Go)
 
 ```
-Docker Compose        13 services, tous Up
+Docker Compose        15 services, tous Up
 Chaîne P0             3 exécutions consécutives : 5,8 s / 6,6 s / 6,7 s
                       (limite 90 s, marge ≈ 83 s)
 Modèle                seuil appris 3,33 ; FPR fenêtre 0,0 % ; rappel 100 %
                       (1 058 fenêtres normales, 1 058 fenêtres d'attaque)
 Tests                 79 verts (12 + 11 + 10 + 10 + 10 + 9 + 8 + 4 + 5)
+                      + 25 back-office = 104 au total
 cargo build --release 2 s (incrémental) / 12 s (à froid)
-npm run build         152 kB de JS, 480 ms
-Prometheus            8 cibles up, 11 règles d'alerte évaluées
+npm run build         181 kB de JS, 1,1 s
+Prometheus            9 cibles up, 16 règles d'alerte évaluées
 Grafana               dashboard provisionné, 10 panneaux
+Back-office           YuNet + SFace : 29 ms par visage sur CPU, 38 Mo de modèles
 ```
 
 ---
@@ -218,10 +231,64 @@ Grafana               dashboard provisionné, 10 panneaux
 
 | Élément | État | Effet |
 |---|---|---|
-| `monero-crypto-core` : `ring-sign`, `ring-verify`, `audit-view` | **placeholders** | l'anti-double-dépense et la télémétrie sont réels, la cryptographie ne l'est pas |
 | AppRole Vault | non provisionné | le playbook utilise `VAULT_TOKEN` (token de service) |
-| WAF | service commenté dans `docker-compose.yml` | le honeypot existe, rien ne lui redirige le trafic |
-| `shadow-api` | honeypot fonctionnel, non alimenté | aucun point d'entrée ne l'appelle |
-| RAG Ollama | non commencé | pilier IA/DATA partiel |
-| Dossier EBIOS / PCA-PRA | non commencé | axe gouvernance (10 pts nationaux) |
+| Bulletproofs | non implémentées | un montant négatif modulo l passerait la vérification d'équilibre |
+| Registre d'outputs | en mémoire | perdu au redémarrage de `payment-api` |
+| RAG Ollama | non commencé | pilier IA/DATA couvert par le ML seul |
+| Détection de vivacité (visage) | non implémentée | une photo imprimée passerait (`liveness: not_implemented` dans `/healthz`) |
+| Bandeau LED ESP8266 | firmware écrit, non flashé | l'authentification fonctionne sans lui |
 | Modèle 3D | non imprimé | v1 paramétrique, cotes à mesurer |
+
+---
+
+## 8. Back-office : caméra sur le PC hôte
+
+Exigence de la consigne : la caméra est **obligatoirement** branchée sur le PC
+hôte. Conséquence technique : elle est ouverte par le **navigateur du PC hôte**,
+via `getUserMedia`, et non par un conteneur.
+
+```
+   PC hôte (Windows, point d'accès RESILIENCE-G<n>)
+   ┌────────────────────────────────────────────────────────┐
+   │  navigateur ──► getUserMedia ──► caméra USB            │
+   │      │  JPEG (base64)                                  │
+   │      ▼                                                 │
+   │  docker : backoffice:8086 ──► YuNet + SFace ──► SQLite │
+   │      ▲                                                 │
+   │      │ GET /led/state (300 ms, WiFi)                    │
+   │  ESP8266 + LED bicolore                                 │
+   └────────────────────────────────────────────────────────┘
+```
+
+Trois règles :
+
+1. **Ouvrir le dashboard par `http://localhost:5173`**, jamais par une IP du
+   réseau : `getUserMedia` exige un « contexte sécurisé » et `localhost` en est
+   un, une IP LAN non.
+2. **Une seule application peut tenir la caméra.** Fermer Teams / Zoom / une
+   autre fenêtre de navigateur qui l'utiliserait, sinon l'erreur `busy` est
+   affichée explicitement.
+3. **Docker Desktop n'a pas d'accès webcam fiable** (WSL2) : c'est précisément
+   pourquoi la capture est côté navigateur, et non dans un conteneur.
+
+Premier démarrage :
+
+```bash
+# 1. jeton d'enrôlement (dans .env), puis
+docker compose up -d backoffice front-dashboard
+
+# 2. ouvrir http://localhost:5173 → écran d'enrôlement
+#    identifiant + mot de passe + jeton + scan du visage
+
+# 3. fermer le bootstrap : retirer BO_BOOTSTRAP_TOKEN de .env
+docker compose up -d backoffice
+
+# 4. contrôle
+python tools/backoffice_check.py
+```
+
+Les modèles faciaux sont téléchargés **à la construction de l'image** et
+vérifiés par SHA-256 (`services/backoffice/Dockerfile`) : aucun téléchargement
+au runtime, donc aucun échec réseau pendant la démonstration. Pour un poste
+sans Docker : `python services/backoffice/fetch_models.py` puis
+`uvicorn main:create_app --factory --port 8086`.

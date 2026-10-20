@@ -26,9 +26,19 @@ Trois vérifications qui évitent 90 % des incidents de dernière minute :
 | Modèle chargé | `curl -s localhost:8083/healthz` | `"model": "ready"` |
 | Webhook sain | idem | `"last_webhook_error": null` |
 | Noyau crypto prêt | `curl -s localhost:8080/healthz` | `"crypto_core": "ready"` |
+| Back-office prêt | `python tools/backoffice_check.py` | 0 échec, `face_engine: ready` |
+| Caméra | ouvrir http://localhost:5173 | l'aperçu s'affiche, la LED de la webcam s'allume |
+
+`tools/e2e_demo.py` publie aussi `backoffice_ready` dans son résumé : ce n'est
+pas bloquant (le back-office n'est pas dans la chaîne P0), mais un `false` le
+jour J se voit avant de commencer.
 
 **Réinitialiser la déception** entre deux répétitions :
 `python tools/attack.py reset`
+
+**Réinitialiser le back-office** (comptes bloqués, sessions ouvertes) :
+débloquer depuis l'écran « Habilitations », ou `docker compose restart backoffice`
+(les comptes et les visages sont conservés dans le volume `bo-data`).
 
 ---
 
@@ -48,19 +58,32 @@ Si quelqu'un touche au clavier pendant la remédiation, l'axe 1 est perdu.
 
 ## 2. Le scénario, seconde par seconde
 
+> **Version consigne additionnelle.** Les 18 premières secondes montrent
+> l'authentification à deux facteurs (c'est la nouveauté demandée), puis la
+> chaîne attaque → remédiation → preuve tient dans les 42 secondes restantes.
+> Si le jury ne veut voir que la chaîne P0, commencer à 18 s : le tableau
+> ci-dessous se lit alors de 18 s à 60 s, et la démonstration reste complète.
+
 | Temps | Action | Ce qu'on voit | Ce qu'on dit |
 |---|---|---|---|
-| 0–10 s | Le présentateur tape `1234` sur le pavé du dashboard | LED bleu/violet, badge **NORMAL**, `TX DE PREUVE : OK` | « Le service est nominal : le client paie, le système le prouve en continu. » |
-| 10–20 s | Il tape `0000` deux fois | Compteur de refus qui monte, taux en rouge | « Surface d'attaque physique : le terminal alimente le ML en données réelles. » |
-| 20–25 s | **L'attaquant lance** `python tools/attack.py poison` | Score ML qui grimpe, badge **SOUS ATTAQUE** | « Attaque depuis un poste distinct : l'attaquant empoisonne les leurres de l'anneau. » |
-| 25–30 s | Rien | Badge **REMEDIATION**, console Ansible | « Aucune intervention. Le détecteur a franchi son seuil appris et déclenche le playbook. » |
-| 30–40 s | Rien | Journal Ansible qui défile : déception, quarantaine, durcissement | « Déception active, quarantaine des outputs compromis, anneau durci de 11 à 25. » |
-| 40–45 s | Rien | Badge **RETABLI** | « Reprise en 7 secondes. La preuve, c'est la transaction suivante. » |
-| 45–55 s | **Le présentateur retape un paiement** `1234` | Vert fixe, nouvelle ligne | « Un client peut de nouveau payer. C'est ça, la résilience. » |
-| 55–60 s | L'attaquant relance `poison` | Requêtes **déroutées** vers le honeypot | « L'attaquant, lui, tape maintenant dans le vide : il est contenu. » |
+| 0–6 s | Le présentateur tape son **identifiant** sur le dashboard | la **caméra USB du PC hôte** s'allume | « Le back-office n'accepte plus un simple mot de passe : l'identifiant déclenche la caméra. » |
+| 6–12 s | Il lance le **scan du visage** | **LED verte clignotante** (bandeau ESP8266 + miroir à l'écran) | « Le visage est comparé à celui enrôlé pour ce compte. La carte passe au vert clignotant : le mot de passe est attendu. » |
+| 12–18 s | Il tape le **mot de passe** | **LED verte fixe 30 s**, dashboard ouvert | « Deux facteurs. Si le visage ne correspond pas, la LED passe au rouge fixe 30 s et l'identifiant est vidé ; deux échecs bloquent cinq minutes. » |
+| 18–26 s | Il tape `1234` sur le pavé du dashboard | LED bleu/violet, badge **NORMAL**, `TX DE PREUVE : OK` | « Le service est nominal : le client paie, le système le prouve en continu. » |
+| 26–31 s | Il tape `0000` deux fois | Compteur de refus qui monte, taux en rouge | « Surface d'attaque physique : le terminal alimente le ML en données réelles. » |
+| 31–36 s | **L'attaquant lance** `python tools/attack.py poison` | Score ML qui grimpe, badge **SOUS ATTAQUE** | « Attaque depuis un poste distinct : l'attaquant empoisonne les leurres de l'anneau. » |
+| 36–40 s | Rien | Badge **REMEDIATION**, console Ansible | « Aucune intervention. Le détecteur a franchi son seuil appris et déclenche le playbook. » |
+| 40–47 s | Rien | Journal Ansible qui défile : déception, quarantaine, durcissement | « Déception active, quarantaine des outputs compromis, anneau durci de 11 à 25. » |
+| 47–52 s | Rien | Badge **RETABLI** | « Reprise en 7 secondes. La preuve, c'est la transaction suivante. » |
+| 52–57 s | **Le présentateur retape un paiement** `1234` | Vert fixe, nouvelle ligne | « Un client peut de nouveau payer. C'est ça, la résilience. » |
+| 57–60 s | L'attaquant relance `poison` | Requêtes **déroutées** vers le honeypot | « L'attaquant, lui, tape maintenant dans le vide : il est contenu. » |
 
-**Le geste de 45 s est le cœur de la démo.** C'est la preuve qu'un *client*
+**Le geste de 52 s est le cœur de la démo.** C'est la preuve qu'un *client*
 paie de nouveau. Ne jamais le présenter comme une action d'administration.
+
+**Le geste de 6 s est la réponse à la consigne additionnelle.** Ne pas couper
+la caméra : c'est la preuve visuelle que l'authentification est réelle, et le
+bandeau LED la rend lisible à distance sans regarder l'écran.
 
 ---
 
@@ -110,6 +133,21 @@ montant **sans pouvoir dépenser**. C'est l'argument DORA art. 19.
 
 ## 5. Q&A — les cinq questions qui viendront
 
+**« Une photo de l'utilisateur suffit-elle à passer ? »**
+Oui, aujourd'hui : il n'y a pas de détection de vivacité, et c'est écrit dans
+`/healthz` (`liveness: not_implemented`). Le visage est un facteur d'identité,
+pas un anti-spoofing ; le mot de passe reste le second facteur, et il n'est
+demandé qu'après la reconnaissance. Ce qui est réellement couvert : un
+identifiant volé ne suffit plus, un mot de passe volé ne suffit plus, et une
+photo seule ne suffit pas non plus (il faut aussi le mot de passe).
+
+**« Pourquoi la caméra est-elle ouverte par le navigateur et pas par un
+conteneur ? »**
+Parce que la consigne impose la caméra sur le **PC hôte**, et que Docker
+Desktop/WSL2 n'a pas de passthrough webcam fiable. Le navigateur du PC hôte est
+le seul composant qui a un accès garanti au matériel. Le serveur reçoit une
+image JPEG ponctuelle, en calcule le descripteur, et n'en conserve **aucune**.
+
 **« Votre détection, c'est un seuil fixe déguisé ? »**
 Non. Le seuil est appris sur une capture de trafic réel (1 089 fenêtres), prend
 le max de deux estimateurs, et est stocké dans `threshold.json` avec les
@@ -149,6 +187,10 @@ ailleurs produit des faux positifs — c'est arrivé trois fois pendant le proje
 
 | Symptôme | Geste immédiat | Ce qu'on dit |
 |---|---|---|
+| La caméra ne s'ouvre pas | fermer Teams/Zoom, recharger la page ; vérifier que l'URL est `localhost` | « une autre application tient la caméra, je la libère » |
+| « visage non reconnu » sur le bon utilisateur | se placer face à la lumière, visage entier dans le cadre, relancer le scan | « la lumière du vidéoprojecteur me met à contre-jour » |
+| Compte bloqué après deux essais | écran « Habilitations » → débloquer (ou attendre 5 min) | « le blocage est une fonctionnalité, pas une panne » |
+| LED du bandeau éteinte | l'authentification fonctionne quand même ; vérifier l'alim et le WiFi de l'ESP | « l'objet est un miroir, la chaîne ne dépend pas de lui » |
 | Badge bloqué sur NORMAL, score bas | L'attaquant relance `poison` | « L'attaque n'a pas porté, je la relance. » |
 | Score monte mais rien ne se passe | Vérifier `curl localhost:8083/healthz` → `last_webhook_error` | « Le webhook est cassé, je le signale. » |
 | `REMEDIATION_FAILED` | `curl localhost:8084/history` → `ansible_rc` | « Le playbook a échoué, voici la trace. » |

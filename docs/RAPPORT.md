@@ -38,7 +38,7 @@ la preuve de reprise par une transaction réelle plutôt que par un log.*
 ### 2.1 Vue d'ensemble
 
 ```
-   PC Attaquant                     PC Hôte (docker compose, 14 services)
+   PC Attaquant                     PC Hôte (docker compose, 15 services)
    ┌──────────┐
    │ attack.py│──► waf:8085 ──┬──► payment-api:8080 ──► monero-crypto-core:8081
    └──────────┘   (proxy)     │         │                        (Rust)
@@ -57,6 +57,16 @@ la preuve de reprise par une transaction réelle plutôt que par un log.*
                               │              ┌─────────┴─────────┐
                               └──► shadow-api │ front-dashboard   │ hardware_bridge
                                    (honeypot) │ (anneau + score)  │ (ESP32, hôte)
+                                              └─────────┬─────────┘
+                                                        │ session (Bearer)
+                                              ┌─────────▼─────────┐
+   caméra USB ──── image JPEG ───────────────►│ backoffice:8086   │
+   (PC hôte, navigateur)                      │ YuNet + SFace     │
+                                              │ SQLite + audit    │
+                                              └─────────┬─────────┘
+                                                        │ GET /led/state (WiFi)
+                                              ┌─────────▼─────────┐
+                                              │ ESP8266 + LED RGB │
                                               └───────────────────┘
 ```
 
@@ -65,9 +75,9 @@ la preuve de reprise par une transaction réelle plutôt que par un log.*
 | Pilier | Composants | Lien avec les autres |
 |---|---|---|
 | **DEV** | `payment-api`, `monero-crypto-core`, `front-dashboard` | le dashboard consomme SSE et `/score` ; l'API appelle le noyau Rust à chaque transaction |
-| **INFRA** | `docker compose`, `ansible/`, `prometheus`, `grafana`, `loki` | le moteur exécute un vrai playbook Ansible ; Prometheus scrape 7 services |
+| **INFRA** | `docker compose`, `ansible/`, `prometheus`, `grafana`, `loki` | le moteur exécute un vrai playbook Ansible ; Prometheus scrape 9 services |
 | **IA/DATA** | `ml-detector` (scikit-learn + PyTorch) | publie l'incident au moteur ; expose le score au dashboard |
-| **CYBER** | `waf`, `shadow-api`, `auth-service`, `vault` | le WAF déroute vers le honeypot ; Vault détient la clé JWT ; Ansible fait tourner cette clé |
+| **CYBER** | `waf`, `shadow-api`, `auth-service`, `vault`, **`backoffice`** | le WAF déroute vers le honeypot ; Vault détient la clé JWT ; Ansible fait tourner cette clé ; le back-office contrôle l'accès au tableau de supervision |
 | **TRANSFORMATION** | `docs/GOUVERNANCE.md` | EBIOS RM et PCA/PRA reliés aux composants ci-dessus, pas à un schéma théorique |
 
 Un pilier n'est pas « présent » parce qu'un conteneur porte son nom. Il l'est
@@ -91,6 +101,50 @@ paiement continue. C'est volontaire : le ML observe, il ne filtre pas.
 légitime aussi — mais seule la transaction qui porte le signal d'attaque est
 déroutée. Une déception qui casse le paiement du client serait pire que pas de
 déception.
+
+### 2.4 L'authentification du back-office (consigne additionnelle)
+
+Le tableau de supervision n'est plus accessible sans franchir trois étapes :
+identifiant, **reconnaissance faciale sur la caméra USB du PC hôte**, mot de
+passe. Un bandeau LED ESP8266 rend chaque étape visible à distance.
+
+```
+ navigateur (PC hôte)                 docker (PC hôte)
+ ┌────────────────────┐   JPEG    ┌──────────────────────────────┐
+ │ getUserMedia       │──────────►│ backoffice:8086              │
+ │ caméra USB         │           │  YuNet → SFace → cosinus     │
+ └────────────────────┘           │  SQLite : comptes, sessions,  │
+          ▲                       │  blocages, audit             │
+          │ état                  └──────────────┬───────────────┘
+ ┌────────┴──────────┐   GET /led/state (300 ms) │
+ │ ESP8266 + LED RGB │◄──────────────────────────┘
+ └───────────────────┘
+```
+
+Trois décisions qui méritent une phrase en Q&A :
+
+**La décision de sécurité est côté serveur.** Le navigateur n'annonce jamais
+« visage reconnu » : il envoie une image, le serveur calcule le descripteur et
+le compare. Un client modifié ne peut pas sauter l'étape 2. Le compteur
+d'échecs et le blocage de 5 minutes vivent en base : recharger la page ne les
+remet pas à zéro.
+
+**L'ESP interroge, il n'est pas poussé.** Le PC hôte est le point d'accès : la
+carte est derrière son NAT. Un POST serveur → carte exigerait une IP fixe, une
+réservation DHCP et une règle de pare-feu entrante — trois causes de panne pour
+300 ms de latence gagnées. Le firmware reste maître du temps (30 s de vert fixe,
+10 flashs rouges) et **s'éteint s'il ne joint plus le back-office** : pas de feu
+vert sans service.
+
+**Le visage est un facteur d'identité, pas un anti-spoofing.** Une photo
+imprimée passerait ; c'est publié dans `/healthz` (`liveness: not_implemented`).
+Le mot de passe reste le second facteur, et il n'est demandé qu'après la
+reconnaissance.
+
+Coût mesuré : **29 ms** par visage sur un CPU portable, 38 Mo de modèles
+téléchargés et vérifiés par SHA-256 **à la construction de l'image** — aucun
+téléchargement au runtime, donc aucun échec réseau possible pendant la
+démonstration.
 
 ---
 
@@ -357,7 +411,7 @@ Limite fixée : 90 s. Marge : **83 secondes** sur un créneau de 3 minutes.
 | `burst` (50 ms d'intervalle) | 40 transactions, 9,7 tx/s, aucune erreur |
 | `malformed` (anneau vide, clés invalides) | **400** propre, service toujours vivant |
 
-### 6.3 Tests automatisés — 79
+### 6.3 Tests automatisés — 104
 
 | Suite | Nombre | Ce qu'elle prouve |
 |---|---|---|
@@ -371,6 +425,7 @@ Limite fixée : 90 s. Marge : **83 secondes** sur un créneau de 3 minutes.
 | `hardware/bridge` | 9 | trame série, états inconnus, pont strictement en lecture |
 | `shadow-api` | 4 | honeypot jamais repéré, journal borné |
 | `auth-service` | 5 | clé Vault, 503 si Vault muet, cache et rotation |
+| `backoffice` | **25** | parcours identifiant → visage → mot de passe, refus et caméra éteinte, blocage 5 min, LED (vert clignotant, vert fixe, rouge ×10, rouge fixe) avec expiration, habilitations, dernier admin protégé, audit sans secret |
 
 ```bash
 ./tools/run_tests.sh        # tout
@@ -378,7 +433,7 @@ Limite fixée : 90 s. Marge : **83 secondes** sur un créneau de 3 minutes.
 
 ### 6.4 Observabilité
 
-Prometheus scrape 8 cibles (toutes `up`), évalue 11 règles d'alerte. Grafana est
+Prometheus scrape 9 cibles (toutes `up`), évalue 16 règles d'alerte. Grafana est
 provisionné (datasource + dashboard 10 panneaux) : aucun clic après `up -d`.
 
 Les alertes ciblent les **pannes silencieuses**, pas les attaques : une attaque
@@ -411,6 +466,14 @@ détectée est le comportement attendu du système. On alerte sur le silence —
   l'assistant.
 - **Objet physique non flashé**, modèle 3D v1 non imprimé. Non bloquant par
   conception : l'objet n'est jamais nécessaire.
+- **Pas de détection de vivacité faciale** : une photo imprimée tenue devant la
+  caméra passerait. Publié dans `/healthz` (`liveness: not_implemented`) ; le
+  mot de passe reste le second facteur.
+- **Back-office en HTTP sur `localhost`** : `getUserMedia` exige un contexte
+  sécurisé. Une IP LAN est refusée par le navigateur ; TLS est un chantier
+  (`TODO.md` §1.0).
+- **Bandeau LED ESP8266 non flashé** : firmware et contrat écrits, recette
+  matérielle en 5 tests. L'authentification fonctionne sans lui.
 
 ### 7.3 Ce que la démonstration prouve, et ce qu'elle ne prouve pas
 
@@ -479,6 +542,7 @@ Runbook de soutenance :
 | `remediation-engine` | 8084 | `/healthz`, `/metrics`, `/incident`, `/state`, `/state/report`, `/events` (SSE), `/history` |
 | `waf` | 8085 | `/healthz`, `/metrics`, `/admin/{redirect,reset,state}`, proxy `/*` |
 | `shadow-api` | 8090 | `/healthz`, `/metrics`, `/decoys`, `/tx/submit`, `/admin/interceptions` |
+| `backoffice` | 8086 | `/healthz`, `/metrics`, `/led/state`, `/auth/{bootstrap,identify/start,identify,password,me,logout}`, `/admin/{users,users/{id},users/{id}/face,users/{id}/unlock,audit,sessions,sessions/{id},stats}` |
 
 ## Annexe B — Reproduire les mesures
 
@@ -503,10 +567,10 @@ python tools/attack.py all
 
 | Élément | Valeur |
 |---|---|
-| Services | 7 (dont 1 en Rust) |
-| Conteneurs | 14 |
-| Lignes de code (Python, Rust, JSX, firmware) | ~7 100 |
-| Routes HTTP | 52 (dont 13 en Rust) |
-| Tests automatisés | 79 |
+| Services | 8 (dont 1 en Rust) |
+| Conteneurs | 15 |
+| Lignes de code (Python, Rust, JSX, C++, firmware) | ~9 700 |
+| Routes HTTP | ~73 (dont 13 en Rust, 21 pour le back-office) |
+| Tests automatisés | 104 |
 | Fenêtres d'entraînement | 1 129 |
 | Durée de la chaîne P0 | 6,6 à 7,2 s (limite 90 s) |

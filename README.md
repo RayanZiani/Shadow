@@ -6,6 +6,11 @@ d'anomalies par machine learning et remédiation autonome. Workshop M2 2026.
 **MVP complet** : les cinq piliers sont branchés les uns aux autres et la
 chaîne tourne de bout en bout sous Docker, sans intervention humaine.
 
+**Consigne additionnelle livrée** : le back-office est protégé par identifiant
++ **reconnaissance faciale** (caméra USB du PC hôte) + mot de passe, avec
+habilitations complètes et bandeau LED ESP8266. Voir
+[`docs/CONSIGNE-ADDITIONNELLE.md`](docs/CONSIGNE-ADDITIONNELLE.md).
+
 ## Ce qui est réellement opérationnel
 
 | Brique | État | Preuve |
@@ -17,10 +22,12 @@ chaîne tourne de bout en bout sous Docker, sans intervention humaine.
 | `waf` | Reverse proxy + **déception active** branchée sur le honeypot | 10 tests |
 | `shadow-api` | Honeypot borné, journal d'interception consultable | 4 tests |
 | `auth-service` | Clé JWT lue dans **Vault** (KV v2), fallback explicite sinon | 5 tests |
+| `backoffice` | **Authentification visage + mot de passe** (caméra USB du PC hôte), habilitations, bandeau LED ESP8266 | 25 tests + `tools/backoffice_check.py` |
 | `front-dashboard` | 4 quadrants, anneau SVG, pavé PIN, score ML, audit view-only | `npm run build` |
 | `hardware/bridge` | Pont SSE → USB, reconnexion, mode répétition | 9 tests + `--dry-run` |
 | `hardware/ring_signer_hsm` | Firmware ESP32, 5 états, parseur de trame | à flasher |
-| Observabilité | Prometheus (9 métriques/services, 11 alertes) + Grafana provisionné | `localhost:3001` |
+| `hardware/led_bandeau_esp8266` | Firmware **ESP8266** (CLion + PlatformIO), LED bicolore pilotée par le back-office | compile (35 % RAM, 28 % flash), à flasher |
+| Observabilité | Prometheus (9 services scrapés, 16 alertes) + Grafana provisionné | `localhost:3001` |
 
 **Chaîne P0 mesurée sur Docker** : attaque → détection → remédiation →
 transaction de preuve → déception active en **6,5 à 7,0 s** (limite 90 s,
@@ -31,6 +38,7 @@ marge ≈ 83 s), sur trois exécutions consécutives.
 | Document | Contenu |
 |---|---|
 | [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Dossier d'ingénierie** : architecture, choix techniques, mesures, limites |
+| [`docs/CONSIGNE-ADDITIONNELLE.md`](docs/CONSIGNE-ADDITIONNELLE.md) | **Réponse à la consigne additionnelle** : exigence par exigence, avec preuve |
 | [`docs/GOUVERNANCE.md`](docs/GOUVERNANCE.md) | EBIOS RM, PCA/PRA, NIS2, DORA |
 | [`docs/DEMO.md`](docs/DEMO.md) | Runbook de soutenance (3 min, seconde par seconde) |
 | [`docs/INSTALLATION-LOCAL.md`](docs/INSTALLATION-LOCAL.md) | Installation du poste et recette |
@@ -46,16 +54,40 @@ Guide complet (Docker, Rust, Python, Node, Vault, dépannage) :
 cp .env.example .env
 docker compose build      # ~6-8 min la première fois (torch, cargo)
 docker compose up -d
-docker compose ps         # 14 services, tous Up / healthy
+docker compose ps         # 15 services, tous Up / healthy
 ```
 
 | Accès | URL |
 |---|---|
-| Dashboard | http://localhost:5173 |
+| Dashboard (derrière l'authentification visage) | http://localhost:5173 |
+| Back-office — API d'authentification | http://localhost:8086 |
 | Grafana (admin / admin au 1er démarrage) | http://localhost:3001 |
 | Prometheus | http://localhost:9090 |
 | API de paiement | http://localhost:8080 |
 | WAF (point d'entrée attaquant) | http://localhost:8085 |
+
+## Authentification du back-office (consigne additionnelle)
+
+Le dashboard est désormais **derrière une authentification à deux facteurs** :
+identifiant, puis **reconnaissance faciale sur la caméra USB du PC hôte**, puis
+mot de passe. Deux échecs bloquent le compte cinq minutes. Un bandeau LED
+ESP8266 (CLion + PlatformIO) reflète chaque étape : vert clignotant quand le
+visage est reconnu, vert fixe 30 s quand le mot de passe est validé, rouge
+10 flashs s'il est refusé, rouge fixe 30 s si le visage ne correspond pas.
+
+```bash
+# premier démarrage : enrôler l'administrateur (jeton dans .env)
+#   BO_BOOTSTRAP_TOKEN=<valeur aléatoire>
+docker compose up -d backoffice front-dashboard
+# ouvrir http://localhost:5173 puis suivre l'écran d'enrôlement
+
+python tools/backoffice_check.py  # contrôle de recette, 0 échec attendu
+```
+
+Détail complet, exigence par exigence :
+[`docs/CONSIGNE-ADDITIONNELLE.md`](docs/CONSIGNE-ADDITIONNELLE.md).
+Service, contrats et limites : [`services/backoffice/README.md`](services/backoffice/README.md).
+Firmware et recette matérielle : [`hardware/led_bandeau_esp8266/README.md`](hardware/led_bandeau_esp8266/README.md).
 
 ## La chaîne, en une commande
 
@@ -145,9 +177,13 @@ python3 -m venv .venv
 ./tools/run_tests.sh
 ```
 
-**79 tests** : bus d'états et flux d'incident (12), détecteur ML (11), API de
+**104 tests** : bus d'états et flux d'incident (12), détecteur ML (11), API de
 paiement (10), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
-(9), honeypot (4), auth-service (5).
+(9), honeypot (4), auth-service (5), **back-office (25)**.
+
+> `run_tests.sh` lance chaque suite **dans le dossier de son service**. C'est
+> volontaire : plusieurs services exposent un `main.py`, et un `pytest services/`
+> global ferait résoudre `import main` vers le premier module homonyme importé.
 
 ## Ce qui reste à faire
 
@@ -157,6 +193,8 @@ paiement (10), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
 - **Registre persistant** : les outputs sont en mémoire (perdus au redémarrage).
 - **RAG Ollama** : non commencé (pilier IA/DATA partiel).
 - **Objet physique** : firmware à flasher, modèle 3D v1 jamais imprimé.
+- **Bandeau LED ESP8266** : firmware écrit et compilé, à flasher sur la carte.
+- **Détection de vivacité** du visage : non implémentée, publiée dans `/healthz`.
 - **Recalibrage ML** sur le PC hôte de démonstration (7 min, obligatoire).
 
 Détail complet, avec chiffres et justifications :
@@ -166,8 +204,8 @@ Détail complet, avec chiffres et justifications :
 ## Priorités
 
 - **P0** — chaîne attaque → ML → Ansible → preuve → déception : **fait et mesuré**.
-- **P1** — honeypot, WAF, observabilité, dashboard, dossier EBIOS/PCA-PRA/DORA :
-  **fait**.
+- **P1** — honeypot, WAF, observabilité, dashboard, dossier EBIOS/PCA-PRA/DORA,
+  **consigne additionnelle (visage + LED)** : **fait**.
 - **P2** — hardware, RAG Ollama. L'objet physique ne doit **jamais** être
   nécessaire à la démo.
 

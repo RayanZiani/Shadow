@@ -189,6 +189,7 @@ Prévoir deux passes : une de vérification, une finale.
 |---|---|
 | `hardware/bridge/hardware_bridge.py` | pont SSE → série, avec replay et reconnexion |
 | `hardware/ring_signer_hsm/ring_signer_hsm.ino` | firmware ESP32 (états, effets LED, parseur de trame) |
+| `hardware/led_bandeau_esp8266/src/main.cpp` | firmware ESP8266 de la consigne additionnelle (LED bicolore, interrogation du back-office) |
 | `services/remediation-engine/main.py` | bus d'événements `/events` et `/state` |
 
 Le port série est en lecture/écriture seule : **aucune commande du terminal ne remonte

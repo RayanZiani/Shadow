@@ -1,7 +1,10 @@
 # TODO — ce qui reste à faire
 
-> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (79 tests verts,
-> chaîne P0 en 6,6-7,2 s, 14 services `Up`).
+> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (104 tests verts,
+> chaîne P0 en 6,6-7,2 s, 15 services `Up`).
+> **Mise à jour du 20/10** : la consigne additionnelle (authentification visage
+> du back-office + bandeau LED ESP8266) est livrée — 25 tests supplémentaires,
+> 15ᵉ service, voir `docs/CONSIGNE-ADDITIONNELLE.md` et §1.0 ci-dessous.
 > Ce fichier liste **uniquement ce qui n'est pas fait**, avec un critère
 > d'acceptation vérifiable pour chaque ligne.
 
@@ -45,9 +48,62 @@ Ces tâches ne sont pas du développement : sans elles, la démo peut échouer.
 - [ ] **Répéter le Clip Chrono** — S
   **Acceptation** : 60 s continues, sans coupe, avec `docs/DEMO.md` §2.
 
+- [ ] **Contrôler le back-office et la caméra** — S (2 min)
+  ```bash
+  python tools/backoffice_check.py     # 0 échec attendu
+  ```
+  Vérifie que le moteur facial est le **vrai** (pas le stub), qu'un
+  administrateur est enrôlé, qu'aucun compte n'est bloqué et que le bandeau
+  LED répond. Faire ensuite un parcours complet à la main, dans le navigateur
+  du PC hôte, **avec la caméra branchée sur ce PC**.
+  **Acceptation** : identifiant → visage reconnu (vert clignotant) → mot de
+  passe (vert fixe 30 s) → dashboard ; un visage inconnu donne rouge fixe 30 s.
+
 ---
 
 ## 1. Priorité haute — points perdus à la grille
+
+### 1.0 Consigne additionnelle — authentification visage du back-office
+
+Livré : `services/backoffice` (port 8086), page de connexion du dashboard,
+écran d'habilitations, firmware `hardware/led_bandeau_esp8266`, scrape
+Prometheus et 5 alertes. Détail exigence par exigence :
+[`docs/CONSIGNE-ADDITIONNELLE.md`](docs/CONSIGNE-ADDITIONNELLE.md).
+
+Ce qui reste :
+
+- [ ] **Flasher le firmware du bandeau** — S
+  CLion + PlatformIO, `hardware/led_bandeau_esp8266/` :
+  `cp src/secrets.example.h src/secrets.h`, renseigner le SSID du point d'accès
+  `RESILIENCE-G<n>` et l'IP de la passerelle, puis `pio run -t upload`.
+  **Acceptation** : les 5 tests du `README.md` §4 passent (vert clignotant <
+  400 ms après le scan, vert fixe 30 s, rouge ×10, rouge fixe 30 s, extinction
+  sans back-office).
+
+- [ ] **Enrôler l'administrateur de démonstration** — S
+  `BO_BOOTSTRAP_TOKEN` dans `.env`, ouvrir http://localhost:5173, enrôler
+  visage + mot de passe, **puis retirer le jeton** et redémarrer le service.
+  **Acceptation** : `python tools/backoffice_check.py` → 0 échec ; `/healthz`
+  → `bootstrap_required: false`, `face_engine: ready`, `demo_only: false`.
+
+- [ ] **Détection de vivacité (anti-photo)** — L
+  Une photo imprimée tenue devant la caméra passe aujourd'hui. Publié dans
+  `/healthz` (`liveness: not_implemented`).
+  **Piste** : challenge de mouvement (cligner / tourner la tête) vérifié par
+  variation de descripteur, ou modèle anti-spoofing ONNX dédié.
+  **Acceptation** : une photo de l'utilisateur enrôlé est **refusée** ; le
+  visage réel est accepté ; `liveness` disparaît de `not_implemented`.
+
+- [ ] **HTTPS sur le back-office** — M
+  Aujourd'hui la caméra ne fonctionne qu'en `localhost` (contexte sécurisé) ;
+  une IP LAN la fait refuser par le navigateur.
+  **Acceptation** : certificat auto-signé + `https://resilience-g1.local:8086`,
+  parcours complet depuis un second poste du point d'accès.
+
+- [ ] **Répéter le parcours d'authentification dans le Clip Chrono** — S
+  Il ajoute ~20 s au scénario de 60 s. Réécrire `docs/DEMO.md` §2 en
+  conséquence et rechronométrer.
+  **Acceptation** : 60 s continues, sans coupe, avec les deux facteurs.
 
 ### 1.1 Bulletproofs (preuves de domaine) — XL
 
@@ -222,7 +278,7 @@ Les 6 tests sont écrits mais n'ont pas été exécutés sur matériel.
 | `loki`/`promtail` sans config | ils démarrent, ne nuisent pas | cf. 2.2 |
 | `ansible.cfg` absent | Ansible fonctionne sans | si on ajoute des rôles |
 | Pas de CI (GitHub Actions) | le projet est un rendu, pas un produit | si le dépôt devient public |
-| Pas de `pre-commit` | 79 tests suffisent | optionnel |
+| Pas de `pre-commit` | 104 tests suffisent | optionnel |
 
 ---
 
@@ -244,6 +300,8 @@ Ne pas perdre de temps dessus, c'est un choix documenté :
 ## 6. Ordre d'exécution recommandé
 
 ```
+Fait        1.0 consigne additionnelle          ← livré : service, page, LED, tests
+            (reste : flasher la carte, enrôler l'admin, vivacité)
 Semaine 1   §0 (recalibrage + 3 répétitions)   ← bloquant, 1 h
             1.2 AppRole Vault                   ← ½ j, gain immédiat en Q&A
             2.2 observabilité propre            ← ½ j, évite un signal négatif
@@ -252,9 +310,9 @@ Semaine 2   1.3 registre PostgreSQL             ← 2 j, supprime un risque de d
 Semaine 3   1.4 RAG Ollama                      ← 2 j, complète le pilier IA/DATA
             2.3 + 2.4 charge et chaos           ← 1 j, matière pour le dossier
 Semaine 4   §3 objet physique                   ← 1 j, non bloquant
-            Passe finale : §0                   ← obligatoire la veille
+            Passe finale : §0 + 1.0             ← obligatoire la veille
 ```
 
-**Si le temps manque** : §0, puis 1.2, puis 2.5. Ce sont les trois lignes qui
-coûtent le moins et qui rapportent le plus (respectivement : ne pas perdre la
-démo, l'axe 2, un argument visuel pour le clip).
+**Si le temps manque** : §0, puis 1.0 (flashage + enrôlement), puis 1.2. Ce sont
+les lignes qui coûtent le moins et qui rapportent le plus : ne pas perdre la
+démo, la consigne additionnelle, l'axe 2.

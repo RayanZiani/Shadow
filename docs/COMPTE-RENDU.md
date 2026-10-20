@@ -26,9 +26,9 @@ marge est de 83 secondes sur l'objectif interne de 90 s.
 | Marge | ≈ 83 s |
 | Faux déclenchements sur trafic normal | **0 %** (0 déclenchement sur 180 fenêtres) |
 | Rappel sur les 4 familles d'attaques | 100 % (1 058 fenêtres d'attaque) |
-| Tests automatisés | **79**, tous verts (Python + Rust) |
+| Tests automatisés | **104**, tous verts (Python + Rust) — dont 25 pour le back-office (session 4) |
 | Attaquant dérouté vers le honeypot | **oui** (vérifié par `e2e_demo.py`) |
-| Services Docker | 13, tous `Up` / `healthy` |
+| Services Docker | 15, tous `Up` / `healthy` |
 
 Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 
@@ -133,10 +133,12 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 
 - `tools/e2e_demo.py` : répétition générale chronométrée, avec 6 contrôles
   bloquants, et attente explicite d'une fenêtre propre avant mesure.
-- `tools/run_tests.sh` : lance les **79 tests** du dépôt (Python + Rust).
+- `tools/run_tests.sh` : lance les tests du dépôt, service par service
+  (**79** à la fin de la session 2, **104** après la session 4).
 - `tools/attack.py` : **PC Attaquant** — 4 familles d'attaques, `reset`.
 - `docs/DEMO.md` : runbook de soutenance (scénario, rôles, Q&A, plan de secours).
-- `observability/` : Prometheus (8 cibles, 11 alertes) + Grafana provisionné.
+- `observability/` : Prometheus (8 cibles, 11 alertes à cette étape ; 9 cibles et
+  16 alertes après la session 4) + Grafana provisionné.
 - `tools/fake_ansible.py` : stub pour rejouer la chaîne sans Ansible.
 - `local-dev/` : lancement sans Docker, clairement marqué **non livrable**.
 - `requirements-dev.txt` + `docs/INSTALLATION-LOCAL.md` : installation du poste
@@ -392,11 +394,12 @@ estimateurs et celui qui a été retenu).
 
 ### 6.1 Ce qui est validé, et comment
 
-`docker compose up` complet (**14 services**), noyau Rust compilé avec bLSAG,
-Ansible réel, **79 tests** verts, trois répétitions générales consécutives,
-Prometheus et Grafana provisionnés. Les stubs `local-dev/crypto_shim.py` et
-`tools/fake_ansible.py` ne sont plus nécessaires : ils restent dans le dépôt,
-marqués non livrables, pour un poste sans Docker.
+`docker compose up` complet (**14 services** à la session 2, **15** après la
+consigne additionnelle), noyau Rust compilé avec bLSAG, Ansible réel,
+**79 tests** verts à cette étape (**104** après la session 4), trois répétitions
+générales consécutives, Prometheus et Grafana provisionnés. Les stubs
+`local-dev/crypto_shim.py` et `tools/fake_ansible.py` ne sont plus nécessaires :
+ils restent dans le dépôt, marqués non livrables, pour un poste sans Docker.
 
 ### 6.2 Cryptographie : bLSAG, pas CLSAG — et pas de Bulletproofs
 
@@ -707,7 +710,8 @@ ne mesuraient rien. Trois ajouts :
   invariants et non des compteurs HTTP : `shadow_model_ready`,
   `shadow_webhook_error`, `shadow_runtime_threshold_ignored`,
   `shadow_crypto_core_ready`, `shadow_waf_deception_active`, etc.
-- **11 règles d'alerte**, chacune reliée à une panne réellement rencontrée
+- **11 règles d'alerte** (16 après la consigne additionnelle), chacune reliée à
+  une panne réellement rencontrée
   (§9). On n'alerte pas « attaque en cours » : c'est le comportement attendu.
   On alerte sur le silence.
 - **Dashboard Grafana provisionné** (10 panneaux, source de données incluse) :
@@ -759,3 +763,73 @@ rafale à 9,7 tx/s, 3 entrées malformées refusées en 400 sans panic.
 | RAG Ollama | Pilier IA/DATA partiel | Non commencé |
 | Objet physique | Non flashé, modèle 3D non imprimé | Non bloquant par conception |
 | Recalibrage ML | Le modèle est calibré sur ce poste, pas sur le PC de démo | 7 min, à faire la veille |
+| **Authentification visage du back-office** | Absente à cette étape | **Livrée en session 4** (§11) |
+
+---
+
+## 11. Consigne additionnelle : authentification visage (session 4)
+
+Consigne reçue : renforcer l'authentification du back-office par une caméra USB
+sur le PC hôte, une IA légère de reconnaissance faciale, la gestion des
+habilitations, et un ESP8266 à LED bicolore connecté au point d'accès.
+
+### 11.1 Ce qui a été construit
+
+| Brique | Fichier | Choix |
+|---|---|---|
+| Service d'authentification | `services/backoffice/` (8086) | FastAPI + SQLite, 25 tests |
+| Reconnaissance faciale | `faces.py` | YuNet (232 Ko) + SFace (37 Mo), cosinus, **29 ms** par visage sur CPU |
+| Page de connexion | `front-dashboard/src/auth/` | identifiant → caméra → mot de passe, miroir de la LED à l'écran |
+| Habilitations | `AdminPanel.jsx` | comptes, rôles, visages, déblocage, sessions, audit |
+| Bandeau LED | `hardware/led_bandeau_esp8266/` | PlatformIO (CLion), C++, interrogation 300 ms |
+| Observabilité | `prometheus.yml`, `alert.rules.yml` | 9ᵉ cible, 5 alertes dédiées |
+| Recette | `tools/backoffice_check.py` | 6 contrôles, code de sortie 0 |
+
+### 11.2 Les trois décisions qui ont demandé un arbitrage
+
+**Où ouvrir la caméra ?** Dans un conteneur, l'accès webcam sous Docker
+Desktop/WSL2 n'est pas fiable — et la consigne impose la caméra sur le PC
+*hôte*. La capture se fait donc dans le navigateur du PC hôte
+(`getUserMedia`), qui envoie **une image JPEG ponctuelle** au back-office.
+Le serveur ne conserve aucune image, seulement un descripteur de 128 octets.
+
+**Qui décide de la reconnaissance ?** Le serveur, jamais le client. Le
+navigateur ne peut pas annoncer « visage reconnu » : il envoie une image, le
+serveur calcule et compare. Le compteur d'échecs et le blocage de 5 minutes sont
+en base — recharger la page ne les remet pas à zéro. C'est la différence entre
+une sécurité et une mise en scène.
+
+**Dans quel sens circule l'état de la LED ?** L'ESP interroge le back-office
+toutes les 300 ms. Le sens inverse (POST serveur → carte) supposerait une IP
+fixe, une réservation DHCP et une règle de pare-feu entrante sur le point
+d'accès : trois causes de panne le jour J, pour 300 ms gagnées. Le firmware
+compte lui-même les 30 s et les 10 flashs, et **s'éteint s'il perd le
+back-office** : pas de feu vert sans service.
+
+### 11.3 Ce qui a été mesuré
+
+```
+Chargement des modèles       0,08 s
+Détection + descripteur     11 ms (image sans visage) / 29 ms (un visage)
+Similarité même visage      0,918  (image réduite à 60 % et recompressée JPEG 60)
+Seuil retenu                0,40   (défaut OpenCV)
+Tests back-office           25 verts
+Firmware ESP8266            compile : 35,4 % RAM, 28,0 % flash
+Image Docker                opencv-python-headless, aucun GPU, aucun PyTorch
+```
+
+Le test qui compte : un visage **différent** de celui enrôlé est refusé
+(`not_recognized`), et le challenge est invalidé — rejouer le mot de passe
+ensuite renvoie `challenge_used`. C'est vérifié par un test automatisé, pas
+seulement à la main.
+
+### 11.4 Ce que la session n'a pas fait
+
+| Élément | Pourquoi | Où c'est dit |
+|---|---|---|
+| Détection de vivacité | modèle anti-spoofing hors périmètre | `/healthz` → `liveness: not_implemented` |
+| TLS sur le back-office | la démo se fait en `localhost` | `TODO.md` §1.0 |
+| Firmware flashé | pas de carte sous la main à cette étape | `hardware/led_bandeau_esp8266/README.md` §4 |
+| HTTPS + caméra depuis un autre poste | `getUserMedia` exige un contexte sécurisé | `docs/INSTALLATION-LOCAL.md` §8 |
+
+Une limite écrite ne coûte pas de point. Une limite découverte en Q&A en coûte.
