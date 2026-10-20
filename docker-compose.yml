@@ -80,6 +80,7 @@ services:
       DATABASE_URL: "postgresql://shadow:changeme@db-postgres:5432/shadow_settle"
       CRYPTO_CORE_URL: "http://monero-crypto-core:8081"
       ML_DETECTOR_URL: "http://ml-detector:8083"
+      REMEDIATION_STATE_URL: "http://remediation-engine:8084/state/report"
     depends_on: [db-postgres, monero-crypto-core]
     ports: ["8080:8080"]
     networks: [shadow-net]
@@ -88,6 +89,8 @@ services:
     build: ./front-dashboard
     environment:
       VITE_API_BASE: "http://localhost:8080"
+      VITE_REMEDIATION_BASE: "http://localhost:8084"
+      VITE_ML_BASE: "http://localhost:8083"
     ports: ["5173:5173"]
     networks: [shadow-net]
 
