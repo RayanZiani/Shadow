@@ -2,13 +2,17 @@
 
 Date : 19-20 octobre 2026
 Périmètre : **MVP — cinq piliers interconnectés, de l'attaque à la preuve**
-Statut : **opérationnel, mesuré, validé sur l'environnement Docker réel**
+Statut : **opérationnel et mesuré ; les ajouts de la session 5 restent à
+valider sur la pile Docker du PC hôte**
 
-Trois sessions :
+Cinq sessions :
 1. **Conception du pipeline ML** (poste sans Docker) — §4.
 2. **Validation sur l'environnement réel** — §9, sept pannes silencieuses.
 3. **Complétion du MVP** — §10 : cryptographie réelle, déception branchée,
    observabilité, gouvernance.
+4. **Consigne additionnelle** — §11 : authentification visage du back-office.
+5. **Nouvelles règles du jury** — §12 : boutique en base, RAG, ingestion SIEM,
+   durcissement, mesure de charge.
 
 > **Ce document est un journal de sessions, pas un état des lieux.** Les
 > sections §4 à §10 décrivent le système **à la date de leur session** : un
@@ -22,22 +26,22 @@ Trois sessions :
 ## 1. Résumé exécutif
 
 La chaîne critique du sujet tourne de bout en bout, sans intervention humaine,
-en **5,8 à 6,7 secondes** sur l'environnement conteneurisé complet. La grille
+en **6,6 à 7,2 secondes** sur l'environnement conteneurisé complet. La grille
 nationale alloue 3 minutes à la démonstration live et 25 points à cet axe : la
 marge est de 83 secondes sur l'objectif interne de 90 s.
 
 | Indicateur | Valeur mesurée (Docker, 3 exécutions) |
 |---|---|
-| Durée détection → reprise | 6,5 s / 6,7 s / 7,0 s |
+| Durée détection → reprise | 6,6 s / 7,1 s / 7,2 s |
 | Objectif interne | < 90 s |
 | Marge | ≈ 83 s |
 | Faux déclenchements sur trafic normal | **0 %** (0 déclenchement sur 180 fenêtres) |
-| Rappel sur les 4 familles d'attaques | 100 % (1 058 fenêtres d'attaque) |
-| Tests automatisés | **164**, tous verts (Python + Rust) — dont 25 pour le back-office (session 4) |
+| Rappel sur les 4 familles d'attaques | 100 % (1 129 fenêtres normales, 1 600 fenêtres d'attaque) |
+| Tests automatisés | **219** (195 pytest + 5 scénarios + 9 unitaires Rust + 10 tests HTTP) — dont 29 pour le back-office et 36 pour la boutique (session 5) |
 | Attaquant dérouté vers le honeypot | **oui** (vérifié par `e2e_demo.py`) |
-| Services Docker | 19, tous `Up` / `healthy` |
+| Services Docker | 19 services, 12 cibles Prometheus |
 
-Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
+Cinq sessions distinctes, et ce sont les deux dernières qui comptent pour la suite :
 
 1. **Session 1** (poste sans Docker ni Rust) : le pipeline ML du squelette ne
    pouvait pas fonctionner. Quatre défauts de conception ont été trouvés par la
@@ -46,6 +50,13 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
    avec Ansible et le noyau Rust compilé. **Sept défauts supplémentaires** ont
    été trouvés — tous invisibles en mode « local-dev », parce que les stubs les
    masquaient. Détail au §9 : c'est la partie la plus utile pour la Q&A.
+3. **Session 3** : complétion du MVP — cryptographie réelle, déception active,
+   observabilité, gouvernance (§10).
+4. **Session 4** : consigne additionnelle — authentification visage du
+   back-office, bandeau LED ESP8266 (§11).
+5. **Session 5** (20 octobre, soir) : nouvelles règles du jury — le SI devient
+   un site de paiement adossé à PostgreSQL, avec RAG, ingestion SIEM et
+   durcissement mesuré (§12).
 
 ---
 
@@ -63,7 +74,7 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 | `calibrate_threshold.py` | **Nouveau.** Calibration sur distribution observée |
 | `validate_real.py` | **Nouveau.** Validation par le vrai chemin de production |
 | `threshold.json` | Artefact versionné : seuil + métriques d'évaluation |
-| `test_detector.py` | **Nouveau.** 11 tests : invariance au volume, purge de fenêtre, anti-rebond |
+| `test_detector.py` | **Nouveau.** 12 tests : invariance au volume, purge de fenêtre, anti-rebond |
 | `Dockerfile` | Entraînement à la construction si un artefact manque (4 vérifiés, pas 1) |
 
 ### 2.2 Moteur de remédiation (`services/remediation-engine`)
@@ -81,7 +92,7 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 - CORS restreint pour le dashboard.
 - Ansible **réellement présent dans l'image** : le playbook s'exécute, il n'est
   pas simulé (4,1 s mesurées, 6 tâches exécutées).
-- 12 tests (7 unitaires + 5 d'intégration).
+- 27 tests (bus d'états, flux d'incident, ingestion SIEM, état terminal).
 
 ### 2.3 API de paiement (`services/payment-api`)
 
@@ -101,8 +112,9 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 - `POST /admin/ring-size` : durcissement réellement appliqué par le playbook.
 - Registre **ré-alimenté** automatiquement : deux démonstrations d'affilée ne
   l'épuisent plus.
-- `test_payment_api.py` : 10 tests (gamma, `unspent`, quarantaine, ring-size,
-  PIN, non-exposition des clés privées).
+- `test_payment_api.py` : 43 tests (13 à l'origine, 30 ajoutés en sessions 4 et
+  5, dont 17 sur le registre et l'idempotence) — gamma, `unspent`, quarantaine,
+  ring-size, PIN, non-exposition des clés privées.
 
 ### 2.4 Dashboard (`front-dashboard`)
 
@@ -113,6 +125,8 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 - **Pavé PIN** (`PinPad.jsx`) : surface d'attaque physique sans démonter le
   terminal, avec compteur de refus en direct.
 - **Quadrant « Audit view-only »** : montant déchiffré par la View Key seule.
+- **Depuis la session 5** : vitrine, back d'administration et quadrant
+  « Assistant » (§12.2, §12.3).
 - Build de production vérifié.
 
 ### 2.4 bis Point d'entrée et déception (`services/waf`)
@@ -141,11 +155,15 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 - `tools/e2e_demo.py` : répétition générale chronométrée, avec 6 contrôles
   bloquants, et attente explicite d'une fenêtre propre avant mesure.
 - `tools/run_tests.sh` : lance les tests du dépôt, service par service
-  (**79** à la fin de la session 2, **104** après la session 4).
+  (**79** à la fin de la session 2, **104** après la session 4, **219** après
+  la session 5).
 - `tools/attack.py` : **PC Attaquant** — 4 familles d'attaques, `reset`.
+- `tools/load_test.py`, `tools/chaos.py`, `tools/preflight.py` : charge, chaos,
+  pré-vol de soutenance (§12.5, §12.6).
 - `docs/DEMO.md` : runbook de soutenance (scénario, rôles, Q&A, plan de secours).
-- `observability/` : Prometheus (8 cibles, 11 alertes à cette étape ; 9 cibles et
-  16 alertes après la session 4) + Grafana provisionné.
+- `observability/` : Prometheus (8 cibles, 11 alertes à cette étape ; **12 cibles,
+  24 règles Prometheus et 4 règles Loki** après la session 5) + Grafana
+  provisionné.
 - `tools/fake_ansible.py` : stub pour rejouer la chaîne sans Ansible.
 - `local-dev/` : lancement sans Docker, clairement marqué **non livrable**.
 - `requirements-dev.txt` + `docs/INSTALLATION-LOCAL.md` : installation du poste
@@ -154,12 +172,12 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 ### 2.7 Nouvelles briques testées
 
 - `services/monero-crypto-core` : **noyau cryptographique réel** — bLSAG, key
-  image, Pedersen, View Key. 8 tests Rust + 10 tests HTTP.
+  image, Pedersen, View Key. 9 tests Rust + 10 tests HTTP.
 - `services/auth-service` : clé JWT lue dans **Vault KV v2**, avec cache de 30 s
-  et fallback **explicite** (`/healthz` dit `vault` ou `fallback_env`). 5 tests.
+  et fallback **explicite** (`/healthz` dit `vault` ou `fallback_env`). 9 tests.
 - `services/shadow-api` : honeypot borné en mémoire, journal consultable.
   4 tests.
-- `observability/` : métriques `/metrics` sur 7 services, alertes, dashboard.
+- `observability/` : métriques `/metrics` sur 12 services, alertes, dashboard.
 
 ### 2.8 Documentation de gouvernance
 
@@ -183,8 +201,8 @@ ansible_rc               0     0     0
 chain_complete        true  true  true
 ```
 
-14 conteneurs `Up`, Ansible réel (4,1 s de playbook), noyau Rust bLSAG compilé,
-Prometheus et Grafana provisionnés.
+14 conteneurs `Up` à cette étape (19 après la session 5), Ansible réel (4,1 s de
+playbook), noyau Rust bLSAG compilé, Prometheus et Grafana provisionnés.
 La stabilité compte autant que la vitesse : une démo qui marche une fois sur
 deux vaut zéro point. Trois exécutions consécutives donnent le même résultat
 parce que `e2e_demo.py` attend désormais une fenêtre de détection **vide** avant
@@ -200,8 +218,8 @@ de mesurer (voir §9.5).
   "n_normal": 1129,
   "source": "capture:baseline.jsonl",
   "threshold_estimators": {
-    "percentile_99.9": 4.6091,
-    "mean_plus_6std": 3.8721,
+    "percentile_99.9": 4.2641,
+    "mean_plus_6std": 4.6091,
     "retained": 4.6091
   },
   "evaluation": {
@@ -222,14 +240,16 @@ de 3 minutes. Mesure comparative :
 |---|---|---|---|
 | moyenne + 4σ | 2,97 | 1,42 % | **0,89 %** |
 | 99,5ᵉ percentile | 3,44 | 0,53 % | 0,18 % |
-| moyenne + 6σ | 4,24 | 0,27 % | 0,09 % |
-| **99,9ᵉ percentile** | **4,61** | **0,27 %** | **0,09 %** |
+| 99,9ᵉ percentile | 4,26 | 0,27 % | 0,09 % |
+| **moyenne + 6σ** | **4,61** | **0,27 %** | **0,09 %** |
 
-Le seuil reste **appris** (aucune constante dans le code), mais l'estimateur est
-plus conservateur — ce qui est cohérent avec le principe §5.3 : le coût d'un
-faux déclenchement (25 points) est sans commune mesure avec celui d'une
-détection 2 s plus tardive. Et la marge est intacte : le score le plus bas d'une
-attaque mesurée est ~11, soit 2,4× le seuil.
+Le seuil retenu est le **maximum des deux estimateurs conservateurs**
+(4,6091 = moyenne + 6σ, contre 4,2641 pour le 99,9ᵉ percentile). Il reste
+**appris** (aucune constante dans le code), mais l'estimateur est plus
+conservateur — ce qui est cohérent avec le principe §5.3 : le coût d'un faux
+déclenchement (25 points) est sans commune mesure avec celui d'une détection 2 s
+plus tardive. Et la marge est intacte : le score le plus bas d'une attaque
+mesurée est **14,29**, soit **3,1×** le seuil.
 
 Validation par le **vrai chemin de production** (`validate_real.py`, trafic
 légitime et attaque envoyés via `payment-api`, pas d'injection directe) :
@@ -254,7 +274,7 @@ le temps de voir la série.
 
 ### 3.3 Séparation des features (mesurée, pas supposée)
 
-`analyze_separation.py` sur 1 140 fenêtres normales et 1 140 fenêtres d'attaque :
+`analyze_separation.py` sur 1 129 fenêtres normales et 1 600 fenêtres d'attaque :
 
 | Feature | Trafic normal | Attaque | AUC |
 |---|---|---|---|
@@ -336,8 +356,8 @@ produisent la même entropie.
 **Méthode** : mesure directe de l'âge des leurres sur les deux populations.
 
 ```
-trafic normal (gamma, biais récent) : 3,56 j ± 0,67   (max observé 5,84)
-leurres empoisonnés (uniforme)      : 31,1 j ± 12,7   (min observé 8,71)
+trafic normal (gamma, biais récent) : 3,850 j ± 0,167
+leurres empoisonnés (uniforme)      : 25,731 j ± 1,859
 ```
 
 Aucun chevauchement. **AUC = 1,000.**
@@ -385,7 +405,7 @@ Le coût des deux erreurs n'est pas symétrique. Un faux déclenchement pendant
 une démo de 3 minutes coûte 25 points ; une détection 5 s plus tardive coûte
 5 secondes. D'où :
 
-- seuil = `max(percentile 99,5, moyenne + 4σ)` ;
+- seuil = `max(percentile 99,9, moyenne + 6σ)` ;
 - 3 fenêtres consécutives anormales avant déclenchement ;
 - refus de conclure si la fenêtre contient moins de 8 événements.
 
@@ -402,8 +422,9 @@ estimateurs et celui qui a été retenu).
 ### 6.1 Ce qui est validé, et comment
 
 `docker compose up` complet (**14 services** à la session 2, **15** après la
-consigne additionnelle), noyau Rust compilé avec bLSAG, Ansible réel,
-**79 tests** verts à cette étape (**104** après la session 4), trois répétitions
+consigne additionnelle, **19** après la session 5), noyau Rust compilé avec
+bLSAG, Ansible réel, **79 tests** verts à cette étape (**104** après la
+session 4, **219** après la session 5), trois répétitions
 générales consécutives, Prometheus et Grafana provisionnés. Les stubs
 `local-dev/crypto_shim.py` et `tools/fake_ansible.py` ne sont plus nécessaires :
 ils restent dans le dépôt, marqués non livrables, pour un poste sans Docker.
@@ -424,7 +445,7 @@ subsistent par rapport à Monero de production :
 
 ### 6.3 Le modèle est calibré sur un seul poste
 
-1 175 observations → 1 089 fenêtres capturées ici. **À refaire sur le PC hôte
+1 129 fenêtres capturées ici. **À refaire sur le PC hôte
 de démonstration** :
 
 ```bash
@@ -441,32 +462,45 @@ la distribution normale (§9.4).
 
 ### 6.4 `auth-service` : AppRole Vault non provisionné
 
-La lecture Vault fonctionne (KV v2, cache 30 s, fallback explicite, 5 tests).
+La lecture Vault fonctionne (KV v2, cache 30 s, fallback explicite, 9 tests).
 Mais l'**AppRole** n'est pas provisionné : en démonstration, le playbook utilise
 `VAULT_TOKEN` (token de service) plutôt qu'un `role_id`/`secret_id` à portée
 restreinte. C'est un cran en dessous de ce que demanderait la production, et
 c'est écrit dans le playbook.
 
-### 6.5 RAG : non commencé *(à cette date — livré depuis, voir §11.3)*
+### 6.5 RAG : non commencé *(à cette date — livré depuis, voir §12.3)*
 
 Le pilier IA/DATA est couvert par la détection ML, pas par l'assistant RAG
 (Ollama + LangChain). C'est le seul pilier partiellement traité.
 
 > **Depuis** : `services/rag-assistant` livre l'assistant (index BM25 construit
-> au build, 14 tests, quadrant dans le dashboard). Seul le branchement d'Ollama
-> sur le PC IA reste à faire — le service répond en mode extractif en attendant.
+> au build, **14 documents / 597 passages**, 16 tests, quadrant dans le
+> dashboard). Seul le branchement d'Ollama sur le PC IA reste à faire — le
+> service répond en mode extractif en attendant (§12.7).
 
 ### 6.6 Le modèle 3D n'a pas été imprimé
 
 C'est une v1 paramétrique ; les cotes du terminal doivent être mesurées avant
 impression. Non bloquant : l'objet physique n'est jamais nécessaire.
 
-### 6.7 Le registre des outputs est en mémoire
+### 6.7 Le registre des outputs n'est plus en mémoire — limite levée le 20 octobre
 
-Perdu au redémarrage de `payment-api`. PostgreSQL est présent dans la stack
-mais n'est pas utilisé pour le registre. Conséquence assumée : un redémarrage
-en pleine démonstration remet les compteurs à zéro (et invalide la transaction
-de preuve en cours).
+*Cette section disait l'inverse. C'était vrai jusqu'à la session 4 ; elle est
+réécrite ici avec la date de la correction.*
+
+Depuis la session 4, `services/payment-api/registry.py` journalise dans
+PostgreSQL les outputs, les key images, les dépenses et le portefeuille ; le
+registre est rechargé au démarrage. Un redémarrage de `payment-api` ne remet
+plus les compteurs à zéro et n'invalide plus la transaction de preuve en cours.
+**17 tests** couvrent le registre et l'idempotence.
+
+Ce qui restait ouvert : une coupure de PostgreSQL faisait passer
+`RegistryStore.available` à `False` **définitivement**, et les écritures
+suivantes étaient perdues en silence. La reconnexion avec backoff exponentiel
+(1 s → 30 s) et compteur `lost_writes` a été implémentée en session 5 (§12.6).
+**À vérifier sur le PC hôte** : `docker compose stop db-postgres`, quelques
+paiements, `start` → `/healthz` doit repasser `durable: true` avec
+`lost_writes` non nul.
 
 ---
 
@@ -493,15 +527,20 @@ restante, et la seule ligne de `/healthz` qui dit encore
 Créer la politique `remediation-policy`, provisionner `role_id`/`secret_id`,
 retirer `VAULT_TOKEN` du compose. ½ journée.
 
-### Priorité 3 — Registre persistant
+### Priorité 3 — Registre persistant — **fait** (20 octobre)
 
-PostgreSQL est déjà dans la stack. Migrer `OUTPUTS` en table, rendre le RPO
-mesurable. 2 jours.
+PostgreSQL est déjà dans la stack. `OUTPUTS` est migré en table
+(`services/payment-api/registry.py`), le registre est rechargé au démarrage et
+les key images sont écrites dans la même transaction que la dépense. 17 tests.
+Ce qui restait — la reconnexion automatique après une coupure de la base — est
+implémenté en session 5 (§12.6), **à vérifier sur le PC hôte**.
 
-### Priorité 4 — RAG Ollama
+### Priorité 4 — RAG Ollama — **fait pour le service** (20 octobre)
 
-Assistant local sur le dossier technique (modèle ≤ 8 Md de paramètres, exigence
-du sujet). 2 jours.
+L'assistant local existe : `services/rag-assistant` (index BM25, 14 documents /
+597 passages, 16 tests, quadrant dans le dashboard). Il répond en **extractif**
+quand Ollama est absent. Le branchement d'Ollama sur le PC IA (modèle ≤ 8 Md de
+paramètres) reste à faire : voir §12.3 et §12.7.
 
 ### Priorité 5 — Objet physique
 
@@ -522,7 +561,7 @@ cp .env.example .env && docker compose up -d
 # Répétition générale chronométrée
 python tools/e2e_demo.py
 
-# Tous les tests (53)
+# Tous les tests (219)
 ./tools/run_tests.sh
 
 # PC Attaquant (4 familles d'attaques)
@@ -553,6 +592,10 @@ python hardware/bridge/hardware_bridge.py --port COM3 --replay
 # Dashboard
 cd front-dashboard && npm run build
 ```
+
+Les commandes ci-dessus sont écrites pour Git Bash / Linux. Sous Windows
+PowerShell, le lanceur de tests est `.\tools\run_tests.ps1` : mêmes suites,
+mêmes codes de sortie, et tests Rust inclus si `cargo` est présent.
 
 ### Diagnostic rapide si la démo ne part pas
 
@@ -717,15 +760,18 @@ et le playbook affiche `ignored=0` (plus aucune tâche masquée).
 Prometheus et Grafana démarraient sans configuration : des conteneurs `Up` qui
 ne mesuraient rien. Trois ajouts :
 
-- **`/metrics`** sur les 7 services (format texte Prometheus), exposant les
+- **`/metrics`** sur les 7 services de cette étape (12 après la session 5),
+  format texte Prometheus, exposant les
   invariants et non des compteurs HTTP : `shadow_model_ready`,
   `shadow_webhook_error`, `shadow_runtime_threshold_ignored`,
   `shadow_crypto_core_ready`, `shadow_waf_deception_active`, etc.
-- **11 règles d'alerte** (16 après la consigne additionnelle), chacune reliée à
+- **11 règles d'alerte** (24 règles Prometheus et 4 règles Loki après la
+  session 5), chacune reliée à
   une panne réellement rencontrée
   (§9). On n'alerte pas « attaque en cours » : c'est le comportement attendu.
   On alerte sur le silence.
-- **Dashboard Grafana provisionné** (10 panneaux, source de données incluse) :
+- **Dashboard Grafana provisionné** (10 panneaux à cette étape, 13 après la
+  session 5, source de données incluse) :
   modèle prêt, webhook, sonde, déception, score vs seuil, légitime vs dérouté.
 
 ### 10.4 Gouvernance (pilier TRANSFORMATION, 10 pts nationaux)
@@ -752,7 +798,7 @@ perd sa crédibilité au premier contrôle.
 
 ```
 detection_seconds      3.0   3.1   3.4
-recovery_seconds       6.5   6.7   7.0
+recovery_seconds       6.6   7.1   7.2
 proof_transaction_ok  true  true  true
 deception_active      true  true  true
 attacker_routed       true  true  true
@@ -770,11 +816,14 @@ rafale à 9,7 tx/s, 3 entrées malformées refusées en 400 sans panic.
 |---|---|---|
 | Bulletproofs | Un montant négatif modulo l passe l'équilibre | Priorité 1 gouvernance |
 | AppRole Vault | Token de service au lieu d'un rôle à portée restreinte | Priorité 2 |
-| Registre en mémoire | Perte des outputs au redémarrage | Priorité 3 (PostgreSQL déjà là) |
-| RAG Ollama | Pilier IA/DATA partiel | Non commencé |
+| ~~Registre en mémoire~~ — **levé le 20/10** | Plus de perte des outputs au redémarrage | `registry.py`, PostgreSQL (§6.7, §12.2) |
+| ~~RAG~~ — **service livré le 20/10** | Pilier IA/DATA couvert ; Ollama reste à brancher | §12.3, reste en §12.7 |
 | Objet physique | Non flashé, modèle 3D non imprimé | Non bloquant par conception |
 | Recalibrage ML | Le modèle est calibré sur ce poste, pas sur le PC de démo | 7 min, à faire la veille |
 | **Authentification visage du back-office** | Absente à cette étape | **Livrée en session 4** (§11) |
+
+> Au 20 octobre au soir, les points non barrés restent ouverts : §12.7 les
+> reprend avec les autres limites de la session 5.
 
 ---
 
@@ -788,7 +837,7 @@ habilitations, et un ESP8266 à LED bicolore connecté au point d'accès.
 
 | Brique | Fichier | Choix |
 |---|---|---|
-| Service d'authentification | `services/backoffice/` (8086) | FastAPI + SQLite, 25 tests |
+| Service d'authentification | `services/backoffice/` (8086) | FastAPI + SQLite, 29 tests (25 à la session 4) |
 | Reconnaissance faciale | `faces.py` | YuNet (232 Ko) + SFace (37 Mo), cosinus, **29 ms** par visage sur CPU |
 | Page de connexion | `front-dashboard/src/auth/` | identifiant → caméra → mot de passe, miroir de la LED à l'écran |
 | Habilitations | `AdminPanel.jsx` | comptes, rôles, visages, déblocage, sessions, audit |
@@ -824,7 +873,7 @@ Chargement des modèles       0,08 s
 Détection + descripteur     11 ms (image sans visage) / 29 ms (un visage)
 Similarité même visage      0,918  (image réduite à 60 % et recompressée JPEG 60)
 Seuil retenu                0,40   (défaut OpenCV)
-Tests back-office           25 verts
+Tests back-office           29 verts (25 à la session 4)
 Firmware ESP8266            compile : 35,4 % RAM, 28,0 % flash
 Image Docker                opencv-python-headless, aucun GPU, aucun PyTorch
 ```
@@ -843,4 +892,249 @@ seulement à la main.
 | Firmware flashé | pas de carte sous la main à cette étape | `hardware/led_bandeau_esp8266/README.md` §4 |
 | HTTPS + caméra depuis un autre poste | `getUserMedia` exige un contexte sécurisé | `docs/INSTALLATION-LOCAL.md` §8 |
 
+Ces quatre points sont toujours ouverts au 20 octobre au soir. §12.7 les
+reprend avec les autres limites de la session 5 (Bulletproofs, AppRole,
+Ollama, mesures sous Docker).
+
 Une limite écrite ne coûte pas de point. Une limite découverte en Q&A en coûte.
+
+---
+
+## 12. Nouvelles règles du jury — session 5 (20 octobre, soir)
+
+Le 20 octobre, le jury a précisé ce qu'il attendait. Trois exigences changent
+l'architecture, pas l'emballage : le SI doit être **un site de paiement** avec
+une base, un front et un back ; l'**IA** doit répondre sur le dossier et agir
+sur les alertes de supervision ; le SI doit être **durci**, sans faille
+volontaire. Cette section dit ce qui a été construit, ce qui a été mesuré, et
+ce qui ne l'a pas été.
+
+### 12.1 Le changement de périmètre
+
+| Avant (sessions 1-4) | Après (session 5) |
+|---|---|
+| Trois transactions de démonstration autour d'un terminal | **Site vitrine de paiement** : catalogue, panier, commande, historique |
+| Registre d'outputs en mémoire, puis PostgreSQL pour le seul registre | **PostgreSQL** pour le registre, la boutique et le portefeuille |
+| Dashboard technique, sans parcours client | **Front vitrine** + **back d'administration** dans le même bundle |
+| Paiement d'une transaction isolée, sans commande | Paiement **réel** par `payment-api /tx/pay` (bLSAG), adossé à une commande et à un stock |
+| IA = détection ML | IA = détection ML **+ RAG + ingestion SIEM** |
+
+Ce que cela coûte : deux services de plus (`shop-api`, `rag-assistant`), une
+base à administrer, et un chemin d'achat qui traverse trois services. Ce que
+cela rapporte : le SI ressemble à ce qu'un jury attend d'un « SI de paiement »,
+et les attaques CYBER ont une cible crédible. La pile passe à **19 services**.
+
+### 12.2 La boutique
+
+`services/shop-api` (port **8087**) porte la boutique, sur **PostgreSQL**
+(`db-postgres`). Le catalogue est amorcé une fois : **6 articles**
+(`TERM-01`, `RING-24`, `HSM-CARD`, `SENSOR-01`, `VAULT-LIC`, `AUDIT-J`), avec
+prix, stock et image.
+
+| Brique | Réalisation |
+|---|---|
+| Catalogue | table `products`, `GET /products`, `GET /products/{id}` |
+| Panier | `carts` / `cart_items`, quantité bornée 1..20, jeton de panier |
+| Commande | `orders` + `order_items` (prix figé au moment de l'achat) |
+| Paiement | `payments` + `payment_events`, statut `pending → paid \| failed` |
+| Historique | `GET /orders` par **capability token** de 256 bits (`customer_ref`) |
+| Back | `AdminShop.jsx` → `/admin/products`, `/admin/orders` |
+
+Trois décisions qui comptent :
+
+**Le stock est réservé atomiquement.**
+`UPDATE products SET stock = stock - ? WHERE id = ? AND active = TRUE AND
+stock >= ?` : le nombre de lignes affectées est vérifié. Deux acheteurs
+simultanés sur le dernier article donnent une commande et un `409`, jamais un
+stock négatif. Un échec de paiement restitue le stock et laisse le panier
+intact.
+
+**Le paiement est réel.** `POST /checkout` appelle `payment-api /tx/pay` :
+output du montant exact, signature d'anneau **bLSAG**, key image stockée dans
+`payments`. Le montant vient de la base, jamais du client. Une commande n'est
+`paid` qu'après une preuve cryptographique ; un refus produit une commande
+`failed` avec son motif dans `payment_events`.
+
+**L'historique n'est pas énumérable.** `customer_ref` est un capability token :
+sans lui, `GET /orders/{reference}` répond **404** et non 403 — un 403
+confirmerait l'existence de la commande. Le format de la référence est validé
+**avant** la comparaison, pour ne pas rouvrir l'oracle d'existence (S1, §12.4).
+
+### 12.3 L'IA : RAG et ingestion SIEM
+
+**`services/rag-assistant` (8091).** Index **BM25** construit au build de
+l'image sur `docs/`, `README.md` et `TODO.md` : **14 documents, 597 passages**.
+`POST /ask` renvoie une réponse **avec ses sources**. Si Ollama est joignable,
+il rédige à partir des passages ; sinon le service répond en **extractif** —
+les phrases du dossier, citées — et `/healthz` le dit. Un assistant qui invente
+serait pire qu'un assistant qui cite.
+
+**Disjoncteur.** Après un échec d'Ollama, plus aucune tentative pendant 30 s, et
+`/healthz` ne fait **aucun appel réseau** : il lit l'état du disjoncteur. Sans
+cela, le test de charge a mesuré un effondrement à 0,5 req/s (§12.5).
+
+**Quadrant « Assistant »** dans le dashboard : question, réponse, sources et
+moteur réellement utilisé (`ollama:...` ou `extractif`).
+
+**Ingestion SIEM.** `POST /alert` reçoit les alertes d'Alertmanager. Une liste
+**fermée** d'alertes est actionnable ; les autres sont journalisées sans ouvrir
+d'incident. Le moteur réutilise exactement le chemin de l'incident ML : même
+verrou, même playbook, même preuve de reprise.
+
+**Corrélation multi-alertes.** Une panne réelle produit 3 à 5 alertes en
+cascade. La première ouvre l'incident ; les suivantes, dans une fenêtre de 10 s,
+sont **rattachées** au même incident et publiées dans `detail.alerts`, au lieu
+d'être ignorées pendant le verrou.
+
+### 12.4 Le durcissement
+
+Deux passes. La première a fermé **7 failles** qu'un jury CYBER exploite en
+quelques `curl` ; l'audit de code en a ajouté **5** — soit **douze failles
+F1 à F12**, documentées dans `docs/SECURITE.md` — puis **4 bugs critiques**
+qui cassaient le service ou faussaient une mesure.
+
+| # | Faille | Ce qu'elle permettait | Correction |
+|---|---|---|---|
+| F1 | login marchand | un JWT valide avec n'importe quel `api_secret` | SHA-256 + table de secrets, **503 fail-closed** |
+| F2 | `/admin/*` payment et WAF | quarantaine de 25 outputs, anneau à 64, déception désarmée | `SERVICE_TOKEN`, comparaison à temps constant |
+| F3 | `/incident`, `/state/report` | playbook déclenché par n'importe qui | idem F2 |
+| F4 | PIN `1234` en dur | terminal ouvert avec une valeur publique | PIN généré, blocage après 5 refus |
+| F5 | anneau non borné | 100 000 leurres = saturation CPU | plafond à 64 |
+| F6 | `/ingest` ouvert | évasion : diluer la fenêtre ML | jeton de service obligatoire |
+| F7 | entrées de la boutique | `"3"` converti, SKU `X'; DROP TABLE …` stocké | `strict=True`, motif de SKU, **422** |
+| F8 | double dépense concurrente | deux `curl` simultanés passaient tous les deux | key image réservée **avant** le premier `await` |
+| F9 | double débit au double-clic | deux commandes et deux paiements pour un panier | panier réclamé atomiquement, relâché si échec |
+| F10 | oracle d'existence | 500 si la commande existe, 404 sinon | format validé avant comparaison, comparaison en octets |
+| F11 | verrouillage du PIN | `{"pin":"é"}` → 500 sans compter l'échec | comparaison en octets, refus compté |
+| F12 | alerte SIEM morte | la règle Loki visait le mauvais service | sélecteur corrigé, vérifié par `check_compose.py` |
+
+Chaque faille a **son test** dans `docs/SECURITE.md`.
+
+**Les quatre bugs critiques de l'audit de code**, chacun avec son test de
+régression :
+
+| # | Bug | Effet réel | Test |
+|---|---|---|---|
+| C1 | SQL booléen contre PostgreSQL | `active = 1` : psycopg envoie un `int4`, PostgreSQL n'a pas de cast → « Application startup failed », conteneur en boucle | `test_postgres_dialect.py` (4 tests) — la preuve reste `docker compose up` |
+| C2 | double dépense concurrente | la propriété centrale du projet contournable par deux requêtes simultanées | `test_une_double_depense_concurrente_est_refusee` |
+| C4 | double débit au double-clic | deux commandes et deux paiements pour un panier | `test_deux_checkouts_sur_le_meme_panier` |
+| S1 | oracle 404 | un `customer_ref` non-ASCII levait 500 si la commande existait, 404 sinon | `test_un_token_non_ascii_ne_fuit_pas_lexistence` |
+
+**Douze points moyens** restent au tableau de l'audit ; ils sont écrits dans
+`TODO.md` §0.6 avec un critère d'acceptation chacun. La deuxième passe (§12.6)
+en ferme plusieurs. Les plus gênants de ceux qui restent : l'itération de
+structures mutées sous charge (`/metrics`, `detector.py`), `StateBus.publish`
+appelé depuis le threadpool, et les `assert` des listes blanches qui
+disparaissent sous `python -O`. Les taire serait la faute ; les corriger tous
+avant la soutenance serait un mauvais arbitrage.
+
+### 12.5 Les mesures
+
+**Test de charge** (`tools/load_test.py`, paliers de 1, 5, 10 et 20 clients,
+rapport réécrit dans `docs/mesures-charge.md`) :
+
+| Cible | Mesure | Comportement | Erreurs |
+|---|---|---|---|
+| Paiement (`GET /outputs`) | **630 req/s** | pas de rupture jusqu'à 20 clients : le débit sature, la latence file | 0 % |
+| RAG (`POST /ask`, extractif) | **336 req/s** | stable ; c'est le disjoncteur qui l'a rendu possible | 0 % |
+| Boutique (`POST /checkout`) | ~130 ms par achat à vide | **point de rupture** : p95 > 1 s dès 5 clients | 0 % |
+
+**Le défaut que la mesure a trouvé** : au premier passage, `/ask` rendait
+**0,5 req/s** avec 2 318 ms de p95 à un seul client, parce qu'il attendait le
+timeout d'Ollama à chaque appel et que `/healthz` interrogeait Ollama. Le
+disjoncteur et un `/healthz` sans appel réseau ont donné **×670 de débit**
+(336 req/s) et p95 divisé par 580. C'est le type de défaut qu'une relecture de
+code ne trouve pas.
+
+**Chaos engineering** (`tools/chaos.py`) : **6 scénarios**, chacun avec un
+invariant métier, pas seulement un code HTTP.
+
+| Scénario | Invariant | État |
+|---|---|---|
+| `token` | jeton retiré → 503 fail-closed sur les routes d'administration, jamais 500 | **vérifié sur ce poste** |
+| `ml` | arrêter le détecteur ne casse pas le paiement | à passer sous Docker |
+| `remediation` | arrêter le moteur ne casse pas le paiement | à passer sous Docker |
+| `crypto` | arrêter le noyau → 503 explicite, jamais 500 | à passer sous Docker |
+| `shop` | arrêter la boutique laisse le paiement intact | à passer sous Docker |
+| `rag` | arrêter le RAG ne touche ni la boutique ni le paiement | à passer sous Docker |
+
+**Logs et base.** Loki + Promtail collectent les logs des conteneurs ;
+**4 règles de logs** poussent à Alertmanager, dont **3 actionnables** par le
+moteur de remédiation. `postgres-exporter` expose la base, avec
+**3 alertes** : base indisponible, pool saturé, volume de la base. Grafana
+passe à **13 panneaux**, dont 3 PostgreSQL.
+
+### 12.6 Ce que la session a corrigé dans le code (deuxième passe)
+
+La première passe livrait les briques ; la seconde a fermé ce qui restait entre
+elles. Ces corrections sont dans le code, pas seulement dans ce document.
+
+| Correction | Ce que ça change |
+|---|---|
+| **Corrélation multi-alertes** | un incident unique, alertes rattachées dans `detail.alerts` (fenêtre 10 s) |
+| **`/tx/pay` idempotent par `reference`** | un rejeu renvoie le résultat déjà émis, pas un second paiement |
+| **Rate limit optionnel sur `/tx/pay`** | `TX_PAY_RATE_LIMIT`, désactivé par défaut pour ne pas fausser les mesures |
+| **Reconnexion PostgreSQL du registre** | backoff 1 s → 30 s, compteur `lost_writes` : une perte silencieuse redevient visible |
+| **Balayage des commandes `pending`** | TTL de 120 s, passage en `failed` et **restitution du stock** |
+| **Images produit servies** | `/static/products/*.svg`, repli typographique au SKU si l'image manque |
+| **Garde « dernier admin » atomique** | `BEGIN IMMEDIATE` : deux rétrogradations concurrentes → une passe, l'autre en 409 |
+| **Console Ansible alimentée** | `ansible_stdout_tail` + `ansible_rc` affichés dans le quadrant remédiation |
+| **3 panneaux PostgreSQL dans Grafana** | connexions actives, taille de la base, transactions longues |
+| **`tools/run_tests.ps1`** | les mêmes suites sous Windows PowerShell, récapitulatif et codes de sortie identiques |
+| **`tools/preflight.py`** | pré-vol de soutenance : secrets, PIN réellement transmis, santé des services, dépôt livrable |
+
+Plusieurs de ces lignes figurent encore comme « à faire » dans `TODO.md` §0.6 :
+le fichier n'a pas été remis à jour après cette deuxième passe.
+
+### 12.7 Ce que la session n'a pas fait
+
+| Élément | Pourquoi | Où c'est dit |
+|---|---|---|
+| **Bulletproofs** | preuves de domaine : 3 à 5 jours, hors du temps de la session | `TODO.md` §1.1 |
+| **AppRole Vault** | le playbook utilise encore `VAULT_TOKEN` | `TODO.md` §1.2 |
+| **Vivacité anti-photo** | une photo imprimée passe le facteur visage | `TODO.md` §1.0, `/healthz` |
+| **TLS** | la démo est en `localhost`, la caméra l'exige | `TODO.md` §0.5.1 |
+| **Firmware non flashé** | pas de carte sous la main | `hardware/led_bandeau_esp8266/README.md` §4 |
+| **Ollama non branché** | pas de PC IA disponible ; le RAG répond en extractif | `TODO.md` §0.5.3 |
+| **Mesures sous Docker/PostgreSQL** | le poste de développement n'a ni Docker ni `cargo` ; les chiffres §12.5 viennent d'un lancement hors conteneurs | `docs/mesures-charge.md` |
+| **5 scénarios de chaos** | ils arrêtent des conteneurs : impossibles sans Docker | §12.5, `tools/chaos.py` |
+
+### 12.8 Résultat de la session
+
+| Suite | Tests |
+|---|---|
+| `remediation-engine` | 27 |
+| `ml-detector` | 12 |
+| `payment-api` | 43 (dont 17 registre/idempotence) |
+| `shadow-api` | 4 |
+| `auth-service` | 9 |
+| `backoffice` | 29 |
+| `shop-api` | 36 (dont 4 dialecte PostgreSQL) |
+| `rag-assistant` | 16 |
+| `waf` | 10 |
+| `hardware/bridge` | 9 |
+| **Sous-total pytest** | **195** |
+| `test_incident_flow.py` (mode script) | 5 |
+| Rust unitaires | 9 |
+| Rust HTTP | 10 |
+| **Total** | **219** |
+
+Mesuré **sur le poste Windows**, sans Docker et sans `cargo` : **195 tests
+pytest verts** à la mesure de la session. Les 9 tests unitaires Rust et les
+10 tests HTTP n'ont pas été exécutés ici (ni `cargo`, ni pile démarrée) :
+**à passer sur le PC hôte** avec `.\tools\run_tests.ps1`.
+
+Ce que ça change pour la soutenance :
+
+- le SI a une **cible crédible** : un site de paiement avec base, front, back,
+  historique et preuve cryptographique ;
+- les attaques CYBER ont un **résultat chiffré** : 6 familles, 6/6 refusées,
+  0 commande frauduleuse, stock jamais négatif, service toujours vivant ;
+- les limites sont **écrites et datées**, y compris celles de cette session ;
+- le bundle du dashboard passe à **206,82 kB** (201,76 kB avant) : le parcours
+  d'achat et le quadrant assistant tiennent dans le même build.
+
+Reste à faire avant de le dire « validé » : repasser les 219 tests, les 5
+scénarios de chaos restants et les mesures de charge **sur la pile Docker du PC
+hôte**. Tant que ce n'est pas fait, ces résultats valent pour le poste de
+développement, pas pour l'environnement de démonstration.

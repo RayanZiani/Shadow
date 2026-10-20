@@ -68,15 +68,33 @@ la preuve de reprise par une transaction réelle plutôt que par un log.*
                                               ┌─────────▼─────────┐
                                               │ ESP8266 + LED RGB │
                                               └───────────────────┘
+
+   ── Chaîne commerce, IA et observabilité (même réseau docker) ──────────────
+   navigateur ──► front-dashboard ──► shop-api:8087 ──► payment-api:8080
+                                        │ articles, panier, commandes
+                                        ▼
+                                  db-postgres:5432 ──► postgres-exporter:9187
+                                        ▲                       (métriques)
+                                        │ registre des outputs (payment-api)
+
+   navigateur ──► rag-assistant:8091  (BM25 sur docs/, extractif si Ollama muet)
+
+   prometheus:9090 ──(24 règles)──► alertmanager:9093 ──► remediation-engine:8084
+        ▲  12 cibles scrapées
+        │
+   loki:3100 ◄── promtail (journaux de tous les conteneurs)
+        └──(4 règles de logs)──► alertmanager:9093
 ```
 
-### 2.2 Les cinq piliers, et ce qui les relie réellement
+### 2.2 Les sept piliers, et ce qui les relie réellement
 
 | Pilier | Composants | Lien avec les autres |
 |---|---|---|
 | **DEV** | `payment-api`, `monero-crypto-core`, `front-dashboard` | le dashboard consomme SSE et `/score` ; l'API appelle le noyau Rust à chaque transaction |
 | **INFRA** | `docker compose`, `ansible/`, `prometheus`, `alertmanager`, `loki`, `grafana` | le moteur exécute un vrai playbook Ansible ; Prometheus scrape 12 services et pousse ses alertes au moteur |
 | **IA/DATA** | `ml-detector` (scikit-learn + PyTorch) | publie l'incident au moteur ; expose le score au dashboard |
+| **COMMERCE** | `shop-api`, `db-postgres`, `Storefront.jsx`, `AdminShop.jsx` | la vitrine lit `GET /products` en base ; l'achat appelle `payment-api /tx/pay` ; l'administration passe par la session du back-office |
+| **IA/RAG** | `rag-assistant` (BM25, Ollama optionnel) | indexe `docs/` à la construction de l'image ; répond avec ses sources ; panneau dédié du dashboard |
 | **CYBER** | `waf`, `shadow-api`, `auth-service`, `vault`, **`backoffice`** | le WAF déroute vers le honeypot ; Vault détient la clé JWT ; Ansible fait tourner cette clé ; le back-office contrôle l'accès au tableau de supervision |
 | **TRANSFORMATION** | `docs/GOUVERNANCE.md` | EBIOS RM et PCA/PRA reliés aux composants ci-dessus, pas à un schéma théorique |
 
@@ -159,7 +177,7 @@ et un historique. `services/shop-api` (PostgreSQL, port 8087) le porte.
 | Commande | `orders` + `order_items` (photo du prix au moment de l'achat) |
 | Paiement | `payments` + `payment_events`, statut `pending → paid | failed` |
 | Preuve | `payment-api /tx/pay` : output du **montant exact**, signature d'anneau bLSAG, key image |
-| Historique | `GET /orders` par **capability token** (`customer_ref` 256 bits) |
+| Historique | `GET /orders` par **capability token** (`customer_ref` 192 bits) |
 | Back | `AdminShop.jsx` : prix, stock, retrait, commandes et preuve |
 
 Trois décisions qui comptent :
@@ -185,8 +203,9 @@ Deux briques répondent à « l'IA actualise ses compétences via le RAG » et
 « l'IA gère les alertes des outils de supervision de sorte à agir elle-même ».
 
 **RAG (`services/rag-assistant`, 8091).** Index BM25 construit **à la
-construction de l'image** sur `docs/`, `README.md` et `TODO.md` : 13 documents, 372
-passages. `POST /ask` renvoie une réponse **avec ses sources**. Si Ollama
+construction de l'image** sur `docs/`, `README.md` et `TODO.md` : 14 documents,
+597 passages pour l'image de démonstration (`/healthz` fait foi après un
+rebuild). `POST /ask` renvoie une réponse **avec ses sources**. Si Ollama
 (`llama3.1:8b`) est joignable, il rédige à partir des passages ; sinon le
 service répond en **extractif** — les phrases du dossier, citées — et le dit
 dans `/healthz` (`generation.ollama: unreachable`). Un assistant qui invente
@@ -199,6 +218,84 @@ actionnable (`NoyauCryptoIndisponible`, `SondeTransactionEnEchec`,
 journalisées sans ouvrir d'incident. Le moteur réutilise **exactement** le
 chemin de l'incident ML : même verrou, même playbook, même preuve de reprise.
 Deux chemins de remédiation finiraient par diverger.
+
+### 2.7 Sécurité et durcissement
+
+Les règles du 20/10 remplacent « pas de faille volontaire » par « SI
+invulnérable ». Aucun SI ne l'est ; ce qui est vérifiable, c'est le nombre de
+trous trouvés, la façon dont ils sont fermés, et la commande qui les rejoue. Un
+audit systématique — surface HTTP, secrets, concurrence, SQL, dépendances — a
+produit **12 failles** (F1–F12) et **4 bugs critiques** (C1, C2, C4, S1). Chaque
+correction est accompagnée d'un **test de régression nommé** : une correction
+sans test revient au premier refactor. Le détail complet (exploit d'avant, code,
+test) est dans [`SECURITE.md`](SECURITE.md) ; ce qui suit est la synthèse.
+
+**Les 12 failles fermées.**
+
+| # | Faille | Correction | Preuve |
+|---|---|---|---|
+| F1 | `/auth/login` acceptait **n'importe quel** `api_secret` | table de secrets SHA-256, comparaison à temps constant, **503 fail-closed**, 10 essais/min par IP | `test_mauvais_secret_refuse` |
+| F2 | `/admin/*` de `payment-api` et du WAF **ouverts** | `SERVICE_TOKEN` obligatoire (`svc_auth.py`), fail-closed | `test_les_endpoints_admin_sont_fermes_sans_jeton` |
+| F3 | `/incident` et `/state/report` **ouverts** | même jeton de service | `test_le_siem_exige_le_jeton_de_service` |
+| F4 | **PIN `1234` codé en dur** | PIN généré par `init_env.py`, 5 refus → 60 s de blocage | `test_le_pin_par_defaut_ne_fonctionne_plus` |
+| F5 | **Anneau non borné** (100 000 leurres) | `max_length=64` : **422** avant le handler et avant toute recherche | `test_65_leurres_sont_refuses_avant_toute_recherche` |
+| F6 | `/ingest` du détecteur **ouvert** | jeton de service obligatoire | `test_ingest_exige_le_jeton_de_service` |
+| F7 | **Entrées non strictes** sur la boutique | `strict=True`, motif de SKU, bornes de quantité → 422 | `test_un_sku_malforme_est_refuse` |
+| F8 | **Double dépense par concurrence** | key image réservée **avant le premier `await`** ; le second appel reçoit 409 | `test_une_double_depense_concurrente_est_refusee` |
+| F9 | **Double débit par double-clic** | réclamation atomique du panier (`checked_out_at IS NULL`), relâchée si le paiement échoue | `test_deux_checkouts_sur_le_meme_panier` |
+| F10 | **Oracle d'existence** sur `/orders/{ref}` (500 si la commande existe, 404 sinon) | format validé avant comparaison, comparaison en **octets**, **404 uniforme** | `test_un_token_non_ascii_ne_fuit_pas_lexistence` |
+| F11 | **PIN non-ASCII** : 500 sans incrémenter le compteur d'échecs | refus compté comme les autres | `test_le_pin_non_ascii_est_compte_comme_un_echec` |
+| F12 | **Alerte SIEM morte** : Loki ciblait `payment-api`, la ligne est écrite par `shop-api` | sélecteur corrigé ; la règle cible le 503 réellement journalisé | `tools/check_compose.py` (contrôle 10) |
+
+**Les 4 bugs critiques.** Trois recoupent des failles du tableau — c'est le même
+défaut vu deux fois (lecture « exploitable » en §2.7, lecture « bug » dans
+l'audit), et le test est le même.
+
+| # | Bug critique | Ce qui se passait | Correction |
+|---|---|---|---|
+| C1 | **Boutique inutilisable sur PostgreSQL** | schéma `active BOOLEAN`, SQL `active = 1` : aucun cast `integer → boolean`, l'exception tombait dans `lifespan`, conteneur en boucle | `TRUE`/`FALSE` dans le SQL, `True`/`False` en Python ; `test_postgres_dialect.py` (4 tests statiques, preuve finale par `docker compose up`) |
+| C2 | **Double dépense concurrente** (= F8) | deux `POST /tx/submit` simultanés passaient tous les deux, puis répondaient `200 confirmed` | key image réservée avant le premier `await` |
+| C4 | **Double débit au double-clic** (= F9) | deux `POST /checkout` sur le même panier créaient deux commandes et deux paiements | réclamation atomique du panier |
+| S1 | **Oracle 404/500** sur `/orders/{ref}` (= F10) | un `customer_ref` non-ASCII levait `TypeError` : 500 si la commande existait, 404 sinon | validation du format, comparaison en octets, 404 uniforme |
+
+**Le défaut de schéma trouvé par le même audit.** `payment-api` et `shop-api`
+créaient tous les deux une table `payments` dans la **même** base
+`shadow_settle`, avec des colonnes différentes (`reference`/`key_image` d'un
+côté, `order_id`/`provider` de l'autre). Avec `CREATE TABLE IF NOT EXISTS`, le
+premier service démarré imposait son schéma et le second lisait une table qui
+n'était pas la sienne. La table du registre a été renommée **`registry_payments`**
+(`services/payment-api/registry.py`) ; `shop-api` garde `payments`. Le
+correctif est dans le code et couvert par `test_registry.py` ; il n'a **pas** été
+rejoué sur la pile Docker de ce poste (Docker absent) — à confirmer par
+`docker compose up` sur le PC hôte.
+
+**La méthode, en trois règles.** (1) Auditer la surface réelle, pas les
+intentions : chaque route, chaque secret, chaque écriture concurrente.
+(2) Fermer en **fail-closed** : un service mal configuré refuse de servir plutôt
+que de servir avec un défaut connu. (3) Prouver par une commande rejouable :
+`tools/attack.py shop` (6 familles d'attaques), `tools/preflight.py` (secrets,
+PIN, services, dépôt), `tools/check_compose.py` (chaîne alerte → actionnable).
+Les 219 tests automatisés (§6.3) contiennent les régressions correspondantes.
+
+**Les 10 limites, écrites et assumées.** 8 restent ouvertes, 2 sont fermées.
+
+| # | Limite | Statut / raison |
+|---|---|---|
+| O1 | **Pas de TLS** | démonstration sur `localhost` ; production : TLS + HSTS |
+| O2 | **Pas de détection de vivacité faciale** | une photo imprimée passe ; le mot de passe reste le second facteur, publié dans `/healthz` |
+| O3 | **Pas de Bulletproofs** | un montant négatif modulo l satisfait l'équilibre ; exige un attaquant authentifié qui forge ses engagements |
+| O4 | ~~Registre d'outputs en mémoire~~ — **fermé** | journal PostgreSQL (`outputs`, `key_images`, `registry_payments`), rechargé au démarrage |
+| O5 | **Blocage 5 min exploitable** en déni de service ciblé | imposé par la consigne ; déblocage admin et alerte `ComptesBloques` |
+| O6 | **Pas de WAF générique** (ModSecurity/CRS) | validation Pydantic par service ; le WAF maison fait de la déception, pas du filtrage |
+| O7 | **Pas de revue d'accès périodique** | journal d'audit et sessions révocables |
+| O8 | ~~Reconnexion du registre non automatique~~ — **fermé le 20/10** | backoff 1 → 30 s, `lost_writes` publié dans `/healthz` |
+| O9 | **RAG `/ask` sans authentification ni quota** | les documents indexés sont déjà versionnés dans le dépôt ; en extractif, le service cite, il n'obéit pas |
+| O10 | **`/history` du moteur public en lecture** | trace de playbook (compteurs, pas de clé) ; le dashboard doit l'afficher sans jeton |
+
+Une faille écrite vaut mieux qu'une faille découverte en Q&A. La recette CYBER
+complète — commandes `curl`, résultats des 6 familles d'attaques boutique,
+tableau des attaques que le SI doit encaisser — est dans
+[`SECURITE.md`](SECURITE.md) §4 et §5.
 
 ---
 
@@ -253,7 +350,8 @@ un wallet ne pioche pas uniformément dans le registre. Un attaquant qui veut
 empoisonner l'anneau n'a pas accès à cette distribution — il lit le registre
 public et tire uniformément.
 
-Mesuré sur ce système (`analyze_separation.py`, 1 173 fenêtres par classe) :
+Mesuré sur ce système (`analyze_separation.py`, 1 129 fenêtres normales et
+1 600 fenêtres d'attaque) :
 
 | Feature | Normal | Attaque | AUC |
 |---|---|---|---|
@@ -282,13 +380,14 @@ Sur 1 129 fenêtres réelles, nous avons comparé les estimateurs :
 |---|---|---|---|
 | moyenne + 4σ | 2,97 | 1,42 % | **0,89 %** |
 | 99,5ᵉ percentile | 3,44 | 0,53 % | 0,18 % |
-| moyenne + 6σ | 4,24 | 0,27 % | 0,09 % |
-| **99,9ᵉ percentile + 6σ** | **4,61** | **0,27 %** | **0,09 %** |
+| 99,9ᵉ percentile | 4,26 | 0,27 % | 0,09 % |
+| **moyenne + 6σ** | **4,61** | **0,27 %** | **0,09 %** |
 
 La règle initiale (`max(p99.5, m+4σ)`) donnait 0,89 % de déclenchements sur
 trois fenêtres consécutives : un faux positif toutes les ~2 minutes de trafic
-dense. Inacceptable pour une démo de 3 minutes. Le seuil retenu est le max du
-99,9ᵉ percentile et de `moyenne + 6σ`.
+dense. Inacceptable pour une démo de 3 minutes. Le seuil retenu est le **max du
+99,9ᵉ percentile (4,2641) et de `moyenne + 6σ` (4,6091)**, soit **4,6091** —
+c'est la moyenne + 6σ qui l'emporte.
 
 Le coût des deux erreurs n'est pas symétrique : un faux déclenchement pendant la
 démo coûte 25 points, une détection 2 s plus tardive coûte 2 secondes. Et la
@@ -469,27 +568,28 @@ intervention humaine.
 | `burst` (50 ms d'intervalle) | 40 transactions, 9,7 tx/s, aucune erreur |
 | `malformed` (anneau vide, clés invalides) | **400** propre, service toujours vivant |
 
-### 6.3 Tests automatisés — 181
+### 6.3 Tests automatisés — 219
 
 | Suite | Nombre | Ce qu'elle prouve |
 |---|---|---|
-| `remediation-engine` bus d'états | 7 | `seq` croissant, SSE, abonné lent non bloquant |
-| `remediation-engine` flux d'incident | 5 | ordre des états, verrou, échec explicite |
+| `remediation-engine` bus d'états | 12 | `seq` croissant, SSE, abonné lent non bloquant |
+| `remediation-engine` flux d'incident | 2 (+ 5 scénarios en mode script) | ordre des états, verrou, échec explicite, état terminal toujours publié |
+| `remediation-engine` ingestion SIEM | 13 | alerte actionnable → incident, alerte de confort ignorée, anti-rebond, corrélation, jeton obligatoire |
 | `ml-detector` | 12 | invariance au volume, purge de fenêtre, anti-rebond, réarmement |
-| `payment-api` | 15 | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés |
-| `payment-api` (registre) | **11** | journal PostgreSQL, rechargement, repli explicite, écriture groupée |
+| `payment-api` | **43** (dont 17 registre/idempotence/rate limit) | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés, journal PostgreSQL, rechargement, rejeu par `reference`, 429 par IP |
 | `monero-crypto-core` (Rust) | 9 | Pedersen homomorphe, chiffrement réversible, anneau valide, falsifications rejetées |
 | `monero-crypto-core` (HTTP) | 10 | émission, dérivation, scan, audit, équilibre, bLSAG, rejeu |
 | `waf` | 10 | âge médian, routage honeypot, **client légitime jamais dérouté** |
 | `hardware/bridge` | 9 | trame série, états inconnus, pont strictement en lecture |
 | `shadow-api` | 4 | honeypot jamais repéré, journal borné |
 | `auth-service` | 9 | clé Vault, 503 si Vault muet, cache et rotation |
-| `backoffice` | **25** | parcours identifiant → visage → mot de passe, refus et caméra éteinte, blocage 5 min, LED (vert clignotant, vert fixe, rouge ×10, rouge fixe) avec expiration, habilitations, dernier admin protégé, audit sans secret |
-| `shop-api` | **24** | catalogue en base, panier borné, achat, stock réservé puis restitué, survente impossible, historique par capability token, administration, double-clic sur « Payer » |
-| `shop-api` (dialecte) | **4** | aucun SQL ne compare un booléen à un entier (casse PostgreSQL) |
-| `remediation-engine` (état terminal) | **2** | une erreur du playbook publie toujours `REMEDIATION_FAILED`, jamais un état bloqué |
+| `backoffice` | **29** | parcours identifiant → visage → mot de passe, refus et caméra éteinte, blocage 5 min, LED avec expiration, habilitations, dernier admin protégé (y compris en concurrence), audit sans secret |
+| `shop-api` | **36** (dont 4 dialecte PostgreSQL) | catalogue en base, panier borné, achat, stock réservé puis restitué, survente impossible, historique par capability token, administration, double-clic sur « Payer », images, balayage des `pending` |
 | `rag-assistant` | **16** | index BM25, question de référence → bon document, citations, mode dégradé, disjoncteur Ollama |
-| `remediation-engine` (SIEM) | **9** | alerte actionnable → incident, alerte de confort ignorée, anti-rebond, jeton obligatoire |
+
+**Total : 219** = 195 pytest (services) + 5 scénarios de script + 9 tests Rust
++ 10 tests HTTP. Les tests de script sont ceux de `test_incident_flow.py`
+lancés hors pytest ; ils comptent une fois, pas deux.
 
 ```bash
 ./tools/run_tests.sh        # tout
@@ -498,12 +598,73 @@ intervention humaine.
 ### 6.4 Observabilité
 
 Prometheus scrape 12 cibles (toutes `up`), évalue 24 règles d'alerte, et les pousse à Alertmanager → remédiation. Loki évalue 4 règles de **logs** et pousse au même Alertmanager. Grafana est
-provisionné (datasource + dashboard 10 panneaux) : aucun clic après `up -d`.
+provisionné (datasource + dashboard **13 panneaux**, dont 3 PostgreSQL) : aucun clic après `up -d`.
 
 Les alertes ciblent les **pannes silencieuses**, pas les attaques : une attaque
 détectée est le comportement attendu du système. On alerte sur le silence —
 `shadow_webhook_error`, `shadow_model_ready`, `shadow_crypto_core_ready`,
 `shadow_probe_ok`, `shadow_runtime_threshold_ignored`.
+
+### 6.5 Test de charge
+
+`tools/load_test.py` exécute un **parcours client complet** à chaque itération,
+pas un `GET /healthz` : `GET /outputs` pour le paiement, `POST /ask` pour le RAG,
+catalogue → panier → `POST /checkout` pour la boutique. Paliers de 5 s,
+1/5/10/20 clients (boutique : 1/5/10), avec p50/p95/p99 et taux d'erreur 5xx.
+Seuils de rupture : **p95 > 1 000 ms** ou **> 1 % d'erreurs** — des choix, pas
+des constantes du système.
+
+| Cible | Paliers | Débit maximal | Latence au dernier palier | Erreurs | Lecture |
+|---|---|---|---|---|---|
+| Paiement (`GET /outputs`) | 1/5/10/20 | **630 req/s** | p95 32 ms (20 clients) | 0 % | pas de rupture ; le débit sature, la latence file |
+| RAG (`POST /ask`, extractif) | 1/5/10/20 | **336 req/s** | p95 61 ms (20 clients) | 0 % | stable après correction du disjoncteur |
+| Boutique (`POST /checkout`) | 1/5/10 | 7,2 req/s (1 client) | p50 129 ms (1 client) | 0 % | ~130 ms par achat complet ; point de rupture **non établi** (voir ci-dessous) |
+
+**La boutique est le chemin le plus coûteux** : chaque achat paie une signature
+d'anneau bLSAG, un aller-retour `shop-api → payment-api` et une écriture en
+base. À vide, un achat complet coûte **~130 ms**. Le tableau brut contient une
+incohérence : 5 clients donnent 7,9 req/s et p50 559 ms, puis 10 clients donnent
+139,9 req/s et p50 7 ms. Un débit multiplié par 18 quand la concurrence double
+n'est pas plausible. Les chiffres sont conservés tels quels, mais **le point de
+rupture annoncé à 5 clients n'est pas établi par ce tableau** ; la mesure est à
+refaire sur le PC hôte avec PostgreSQL. Ce qui est établi : **0 % d'erreurs**,
+aucune chute, et un coût unitaire de ~130 ms.
+
+**La correction majeure vient du RAG.** Au premier passage : **0,5 req/s** et
+**p95 2 318 ms avec un seul client**. Cause : `/ask` attendait le timeout
+d'Ollama à chaque appel, et `/healthz` interrogeait Ollama avec un timeout de
+1,5 s. Deux corrections : un **disjoncteur** (après un échec, plus de tentative
+pendant 30 s) et une sonde **`/healthz` sans appel réseau** (elle lit le
+disjoncteur). Résultat : **336 req/s** à 20 clients (p95 61 ms) ; sur un seul
+client, le p95 passe de 2 318 ms à 4 ms, soit **×670 de débit** et un p95 divisé
+par ~580. C'est le type de défaut qu'un test de charge trouve et qu'une relecture
+de code ne trouve pas.
+
+Chiffres bruts, méthode et anomalie : [`mesures-charge.md`](mesures-charge.md).
+Mesures faites sur un poste de développement **sans Docker ni PostgreSQL** : pour
+la boutique, la latence est un majorant et le débit un minorant par rapport à la
+pile de démonstration.
+
+### 6.6 Chaos engineering
+
+`tools/chaos.py` injecte six pannes et vérifie un **invariant métier**, pas un
+code HTTP. Il redémarre systématiquement ce qu'il a arrêté (`finally`), et
+déclare `SKIP` avec la raison si Docker est absent : on ne prétend pas avoir
+testé ce qu'on n'a pas testé. Chaque scénario a un attendu et un code de sortie.
+
+| Scénario | Panne injectée | Invariant métier | Statut |
+|---|---|---|---|
+| `token` | aucun conteneur ; appels d'administration sans jeton | **503/401 fail-closed**, jamais 200 ni 500 | **vérifié en réel sur ce poste** |
+| `ml` | `docker compose stop ml-detector` | le paiement continue : le ML observe, il ne filtre pas | à passer sous Docker |
+| `remediation` | `stop remediation-engine` | le paiement reste intact, `/state` devient injoignable comme attendu | à passer sous Docker |
+| `crypto` | `stop monero-crypto-core` | `/tx/pay` répond **503/502 explicite**, `/healthz` dit `crypto_core=degraded` | à passer sous Docker |
+| `shop` | `stop shop-api` | `payment-api` reste sain : les silos sont indépendants | à passer sous Docker |
+| `rag` | `stop rag-assistant` | ni la boutique ni le paiement ne s'en aperçoivent | à passer sous Docker |
+
+Le scénario `token` est le seul exécutable sans Docker ; il est **vérifié** ici.
+Les cinq autres exigent la pile (`docker compose stop/start`) et n'ont **pas**
+été exécutés sur ce poste : ils sont à passer sur le PC hôte avant la
+soutenance. Aucun résultat n'est extrapolé.
 
 ---
 
@@ -521,14 +682,14 @@ détectée est le comportement attendu du système. On alerte sur le silence —
 ### 7.2 Opérationnelles
 
 - **Registre des outputs** : persisté dans PostgreSQL (`registry.py`, tables
-  `outputs` et `key_images`), rechargé au démarrage. Repli mémoire explicite
-  si `DATABASE_URL` est absent, publié dans `/healthz`.
+  `outputs`, `key_images` et `registry_payments`), rechargé au démarrage. Repli
+  mémoire explicite si `DATABASE_URL` est absent, publié dans `/healthz`.
 - **AppRole Vault non provisionné** : le playbook utilise un token de service,
   pas un `role_id`/`secret_id` à portée restreinte.
 - **Modèle calibré sur un seul poste** : 1 129 fenêtres capturées ici. Un seuil
   calibré ailleurs produit des faux positifs — c'est arrivé trois fois.
-- **RAG Ollama non branché** : le service RAG est livré (BM25, mode extractif
-  l'assistant.
+- **RAG Ollama non branché** : le service RAG est livré (BM25, mode extractif si
+  Ollama est muet) ; l'assistant cite les phrases du dossier au lieu d'inventer.
 - **Objet physique non flashé**, modèle 3D v1 non imprimé. Non bloquant par
   conception : l'objet n'est jamais nécessaire.
 - **Pas de détection de vivacité faciale** : une photo imprimée tenue devant la
@@ -551,12 +712,33 @@ exécutions consécutives.
 formelle (pas d'audit externe) ; MFA ; gestion des tiers ; résistance à une
 attaque par déni de service volumétrique.
 
+### 7.4 Boutique et RAG
+
+- **Pas de base vectorielle** : l'index du RAG est **BM25**, construit à la
+  construction de l'image. C'est un choix assumé : il ne demande aucun modèle,
+  aucune dépendance de service, et il reste explicable en Q&A. Il est moins bon
+  qu'un embedding dense sur les paraphrases ; les 4 questions de référence
+  passent, la qualité générale n'est pas mesurée.
+- **Pas de remboursement automatique** : une commande `failed` rend le **stock**,
+  pas l'argent. Le SI est fictif, les montants sont en centimes ; la
+  réconciliation interne `paid`/`pending` est faite, pas la réconciliation
+  bancaire.
+- **Images servies localement** : six SVG dans `services/shop-api/static`,
+  montés par `StaticFiles` (chemin fixe, pas de `..` possible). Pas de CDN, pas
+  de cache HTTP, pas de photo produit : le contrat `image_url` est réel, le
+  contenu est illustratif.
+- **Collision de tables trouvée et corrigée** : `payment-api` et `shop-api`
+  créaient chacun une table `payments` dans la même base ; le registre est
+  désormais `registry_payments`. Le correctif est dans le code, mais la
+  coexistence des deux schémas n'a pas été rejouée sur la pile Docker de ce
+  poste — **à confirmer par `docker compose up`** avant la soutenance.
+
 ---
 
 ## 8. Enseignements
 
 **Le risque dominant n'est pas l'attaque, c'est la panne silencieuse.** Sur les
-11 défauts corrigés pendant le projet, **aucun** n'était une attaque réussie.
+défauts corrigés pendant le projet, **aucun** n'était une attaque réussie.
 Tous venaient d'une erreur d'exploitation ou d'une dépendance matérielle :
 
 | Défaut | Ce qu'il produisait |
@@ -594,6 +776,17 @@ Installation du poste et recette :
 Runbook de soutenance :
 [`DEMO.md`](DEMO.md).
 
+Sécurité : les 12 failles, les 4 bugs critiques, les 10 limites et la recette
+CYBER :
+[`SECURITE.md`](SECURITE.md).
+
+Charge et chaos : paliers, p50/p95/p99, point de rupture, 6 scénarios de panne :
+[`mesures-charge.md`](mesures-charge.md).
+
+Réponse aux six exigences du jury du 20/10, avec ce qui est prouvé et ce qui
+reste à passer sur le PC hôte :
+[`REGLES-JURY-20-10.md`](REGLES-JURY-20-10.md).
+
 ---
 
 ## Annexe A — Inventaire des endpoints
@@ -604,10 +797,10 @@ Runbook de soutenance :
 | `payment-api` | 8080 | `/healthz`, `/metrics`, `/outputs`, `/decoys`, `/wallet/public`, `/tx/submit`, `/tx/auto-probe/status`, `/pin/verify`, `/pin/stats`, `/audit/last`, `/audit/outputs/{id}`, `/admin/{quarantine-outputs,ring-size}` |
 | `auth-service` | 8082 | `/healthz`, `/metrics`, `/auth/login` |
 | `ml-detector` | 8083 | `/healthz`, `/metrics`, `/ingest`, `/score`, `/threshold` |
-| `remediation-engine` | 8084 | `/healthz`, `/metrics`, `/incident`, `/state`, `/state/report`, `/events` (SSE), `/history` |
+| `remediation-engine` | 8084 | `/healthz`, `/metrics`, `/incident`, `/alert`, `/alerts`, `/state`, `/state/report`, `/events` (SSE), `/history` |
 | `waf` | 8085 | `/healthz`, `/metrics`, `/admin/{redirect,reset,state}`, proxy `/*` |
 | `shadow-api` | 8090 | `/healthz`, `/metrics`, `/decoys`, `/tx/submit`, `/admin/interceptions` |
-| `shop-api` | 8087 | `/healthz`, `/metrics`, `/products`, `/cart`, `/checkout`, `/orders`, `/admin/{products,orders}` |
+| `shop-api` | 8087 | `/healthz`, `/metrics`, `/products`, `/products/{id}`, `/cart`, `/cart/{token}`, `/cart/{token}/items`, `/cart/{token}/items/{product_id}`, `/checkout`, `/orders`, `/orders/{reference}`, `/admin/products`, `/admin/products/{product_id}`, `/admin/orders`, `/static/*` |
 | `rag-assistant` | 8091 | `/healthz`, `/metrics`, `/ask` |
 | `backoffice` | 8086 | `/healthz`, `/metrics`, `/led/state`, `/auth/{bootstrap,identify/start,identify,password,me,logout}`, `/admin/{users,users/{id},users/{id}/face,users/{id}/unlock,audit,sessions,sessions/{id},stats}` |
 
@@ -626,6 +819,14 @@ cd services/ml-detector && ../../.venv/bin/python analyze_separation.py
 # Les 4 familles d'attaques
 python tools/attack.py all
 
+# Charge : paiement, RAG, boutique (paliers et point de rupture)
+python tools/load_test.py --target payment --clients 1 5 10 20
+python tools/load_test.py --target rag     --clients 1 5 10 20
+python tools/load_test.py --target shop    --clients 1 5 10
+
+# Chaos : 6 scénarios, dont 5 exigent Docker
+python tools/chaos.py
+
 # Tous les tests
 ./tools/run_tests.sh
 ```
@@ -634,10 +835,10 @@ python tools/attack.py all
 
 | Élément | Valeur |
 |---|---|
-| Services applicatifs | 11 (dont 1 en Rust) |
-| Conteneurs | 19 |
+| Services (docker compose) | 19 (dont 1 en Rust) |
 | Lignes de code (Python, Rust, JSX, C++, firmware) | ~13 300 |
-| Routes HTTP | ~100 (dont 13 en Rust, 21 back-office, 14 boutique) |
-| Tests automatisés | 181 |
+| Routes HTTP | ~100 (dont 13 en Rust, 21 back-office, 17 boutique) |
+| Tests automatisés | 219 (195 pytest + 5 script + 9 Rust + 10 HTTP) |
 | Fenêtres d'entraînement | 1 129 |
-| Durée de la chaîne P0 | 6,6 à 7,2 s (limite 90 s) |
+| Bundle du dashboard | 206,82 kB |
+| Durée de la chaîne P0 | 6,6 / 7,1 / 7,2 s (limite 90 s) |

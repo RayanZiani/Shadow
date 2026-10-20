@@ -1,13 +1,16 @@
 # TODO — ce qui reste à faire
 
-> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (181 tests verts),
-> chaîne P0 en 6,6-7,2 s, 19 services `Up`).
-> **Mise à jour du 20/10 (soir)** : les nouvelles règles du jury changent le
-> périmètre — boutique en base, front vitrine, back d'administration, paiement
-> réel avec historique, RAG, ingestion SIEM. **Livré** : voir §0.5. Ce qui
-> reste est listé au même endroit, avec un critère d'acceptation.
+> État au **20 octobre 2026, soir** (fin de la journée 2 sur 5). Le MVP est
+> fonctionnel et mesuré : **219 tests** (195 pytest verts sur ce poste, 5
+> scénarios, 9 unitaires Rust, 10 HTTP), chaîne P0 en 6,6 / 7,1 / 7,2 s,
+> 19 services.
+> **Plan des trois jours restants** : [`docs/PLAN-TRAITE-FINALE.md`](docs/PLAN-TRAITE-FINALE.md).
+> Il ne reste presque plus de code : il reste de la **preuve sur le PC hôte**
+> (Docker, caméra, ESP8266) et de la **répétition**. Les points ouverts ci-dessous
+> sont classés par ce qui bloque réellement la démonstration.
 > Ce fichier liste **uniquement ce qui n'est pas fait**, avec un critère
-> d'acceptation vérifiable pour chaque ligne.
+> d'acceptation vérifiable pour chaque ligne. Les points fermés restent visibles
+> au §0.6 pour que personne ne les rouvre par ignorance.
 
 Légende : `[ ]` à faire · `[~]` partiel · `[x]` fait
 Effort : **S** ≤ 2 h · **M** ≤ 1 j · **L** ≤ 3 j · **XL** > 3 j
@@ -61,9 +64,10 @@ trous qu'un jury CYBER exploite en quelques minutes.
 
 ### 0.5.2 Ce qui reste sur la boutique (N1–N4)
 
-- [ ] **Test de bout en bout de l'achat sous Docker** — S
-  `tools/e2e_shop.py` : catalogue → panier → paiement réel → commande `paid`
-  → historique, en une commande, avec code de sortie.
+- [~] **Test de bout en bout de l'achat sous Docker** — S
+  `tools/e2e_shop.py` est **écrit** (catalogue → panier → paiement réel →
+  commande `paid` → historique → back, code de sortie). Il n'a jamais tourné
+  contre la pile : c'est la première chose à faire le 21/10.
   **Acceptation** : `chain_complete: true`, commande visible dans
   `/admin/orders`, stock décrémenté.
 
@@ -72,18 +76,22 @@ trous qu'un jury CYBER exploite en quelques minutes.
   **Acceptation** : l'historique et le stock sont identiques après
   redémarrage ; aucune commande perdue.
 
-- [ ] **Test de concurrence sur le stock** — S
-  Deux checkouts simultanés sur le dernier article.
+- [~] **Test de concurrence sur le stock** — S
+  Le comportement est prouvé par un test unitaire (5 threads sur le dernier
+  article : un seul `201`, les autres `409`, stock 0). Il manque la mesure
+  **sur la pile** : deux `curl` simultanés sur le dernier article.
   **Acceptation** : une seule commande `paid`, l'autre en `409`, stock jamais
-  négatif. (Le code le fait ; il manque la mesure sous charge.)
+  négatif.
 
 - [x] **Migration du registre d'outputs vers PostgreSQL** — fait
   `services/payment-api/registry.py` (journal PostgreSQL, rechargement au
-  démarrage, 8 tests). Voir §1.3 pour ce qui reste à vérifier sur la pile.
+  démarrage, 16 tests). Voir §1.3 pour ce qui reste à vérifier sur la pile.
 
-- [ ] **Images produit** — S
-  `image_url` existe en base mais aucun fichier n'est servi.
-  **Acceptation** : un article avec image s'affiche dans la vitrine.
+- [x] **Images produit** — fait le 20/10 au soir
+  Six SVG servis par `shop-api` sous `/static/products/`, `image_url` en base,
+  affichage dans la vitrine et vignettes dans le back. 3 tests.
+  **Acceptation remplie en test** : `GET /static/products/<sku>.svg` → 200 ;
+  le catalogue expose une image pour les 6 articles.
 
 ### 0.5.3 Ce qui reste sur l'IA (N6)
 
@@ -98,11 +106,12 @@ trous qu'un jury CYBER exploite en quelques minutes.
   **Acceptation** : une erreur de `payment-api` déclenche une alerte Loki →
   Alertmanager → `POST /alert` → playbook.
 
-- [ ] **Corrélation multi-alertes** — M
-  Une panne réelle produit 3 à 5 alertes en cascade. Aujourd'hui la première
-  ouvre l'incident, les suivantes sont ignorées pendant le verrou.
-  **Acceptation** : un incident unique est créé, avec la liste des alertes
-  corrélées dans `detail.alerts`.
+- [x] **Corrélation multi-alertes** — fait le 20/10 au soir
+  Une rafale d'alertes actionnables produit **un seul** incident, avec la liste
+  corrélée dans `detail.alerts` (visible dans `/state`, `/events`, `/history`).
+  Une alerte tardive est rattachée à l'incident en cours au lieu d'être perdue ;
+  hors fenêtre (`CORRELATION_WINDOW_SECONDS`, 10 s), elle est ignorée avec un
+  motif explicite. 9 tests dédiés.
 
 - [x] **Scénario de démonstration « attaque sur la boutique »** — fait
   `tools/attack_shop.py` : **6 familles** (quantités, panier forgé, injection
@@ -112,105 +121,85 @@ trous qu'un jury CYBER exploite en quelques minutes.
 
 ---
 
-## 0.6 Restes de l'audit de code (moyens, assumés)
+## 0.6 Audit de code — ce qui a été fermé, ce qui reste
 
-L'audit de code a trouvé 4 bugs critiques et 12 moyens. **Les 4 critiques sont
-fermés** (C1 boutique PostgreSQL, C2 double dépense concurrente, C4 double
-débit, S1 oracle 404) — voir `docs/SECURITE.md` §2 bis. Les points ci-dessous
-restent ouverts : ils sont réels, et les taire serait la faute.
+L'audit a trouvé 4 bugs critiques et 12 moyens. **Les 4 critiques et 10 des 12
+moyens sont fermés** le 20/10 au soir, chacun avec un test de régression.
+Voir `docs/SECURITE.md` §2 bis et §6.
 
-### 0.6.1 Commandes bloquées en `pending` — M
+### 0.6.1 Commandes bloquées en `pending` — fermé
 
-Si le processus meurt entre la réservation du stock et l'appel de paiement, la
-commande reste `pending`, le stock est décrémenté, et **rien ne répare jamais**
-cet état. Un timeout HTTP peut aussi produire un paiement réussi côté
-`payment-api` avec une commande `failed` côté boutique (aucune réconciliation
-par `reference`).
+- [x] **Balayage des `pending` au démarrage et périodiquement** — fait
+  `SHOP_PENDING_TTL_SECONDS` (120 s) et `SHOP_PENDING_SWEEP_SECONDS` (30 s) ;
+  réclamation atomique (`UPDATE ... WHERE status='pending'`), restitution du
+  stock une seule fois, événement `expired`, réconciliation si le paiement est
+  `paid`. 4 tests.
+- [x] **`/tx/pay` idempotent par `reference`** — fait
+  Table `registry_payments`, cache mémoire borné, verrou par référence ; un
+  rejeu renvoie la même key image avec `replayed: true`, un montant différent
+  donne 409. 4 tests, dont deux rejeux simultanés.
 
-- [ ] **Balayage des `pending` au démarrage et périodiquement** — M
-  TTL de réservation ; au-delà, passer en `failed` et restituer le stock.
-  **Acceptation** : `kill -9` de `shop-api` entre réservation et paiement,
-  puis redémarrage → la commande est `failed` et le stock est revenu.
+### 0.6.2 Registre : reconnexion — fermé
 
-- [ ] **`/tx/pay` idempotent par `reference`** — M
-  `payment-api` reçoit déjà `reference` mais ne la stocke pas. Un rejeu doit
-  renvoyer le même résultat au lieu d'émettre un second paiement.
-  **Acceptation** : deux appels avec la même `reference` → une seule key image.
+- [x] **Reconnexion avec backoff + compteur de pertes** — fait
+  Backoff 1 s → 30 s dans un thread démon (le chemin critique ne bloque
+  jamais), `available` repasse à `True`, `lost_writes` et
+  `reconnect_attempts` publiés dans `/healthz` et `/metrics`. Reste à vérifier
+  en réel : `docker compose stop db-postgres`, quelques paiements, `start`.
 
-### 0.6.2 Registre : reconnexion non automatique — M
+### 0.6.3 Itération de structures mutées — fermé
 
-Après une coupure PostgreSQL, `RegistryStore.available` passe à `False`
-**définitivement** : les écritures suivantes sont perdues en silence, et les
-key images dépensées pendant la panne le sont aussi (la double dépense
-redevient possible après redémarrage).
+- [x] **Snapshot sous verrou** — fait
+  `_outputs_lock` + `_snapshot_outputs()` pour toutes les lectures de `OUTPUTS`
+  (`/metrics`, `/decoys`, `/outputs`, quarantaine, purge de la sonde) ;
+  `pin_attempts` lu sous `_pin_lock`. Test de mutation concurrente (200
+  itérations). Reste la mesure 10 min sous charge, sur la pile.
 
-- [ ] **Reconnexion avec backoff + compteur de pertes** — M
-  **Acceptation** : `docker compose stop db-postgres`, quelques paiements,
-  `start` → `/healthz` repasse `durable: true` et `lost_writes` est non nul.
+### 0.6.4 `StateBus.publish` depuis le threadpool — fermé
 
-### 0.6.3 Itération de structures mutées — M
+- [x] **Verrou + `loop.call_soon_threadsafe`** — fait
+  `publish` est thread-safe, `report_state` est `async def`, la boucle est
+  mémorisée. Test : 20 publications depuis 4 threads, `seq` strictement
+  croissants, abonné réveillé sans attendre le ping.
 
-`/metrics` et `/decoys` de `payment-api` itèrent `OUTPUTS` depuis le threadpool
-pendant que l'event loop le mute (`_mint`, `verify_pin`). Un
-`RuntimeError: dictionary changed size during iteration` est possible sous
-charge (scrape Prometheus + sonde toutes les 4 s). Même classe dans
-`detector.py` (`_window_age` teste `if not event_window` puis lit
-`event_window[0]`).
+### 0.6.5 Garde « dernier administrateur » — fermé
 
-- [ ] **Snapshot sous verrou** — S
-  **Acceptation** : `tools/load_test.py --target payment --clients 20` pendant
-  10 min sans `RuntimeError` dans les logs.
+- [x] **Transaction + compter les admins avec visage** — fait
+  Garde dans `BEGIN IMMEDIATE`, cible relue sous verrou, seuls les admins
+  actifs **avec visage** comptent. Protégé sur `PATCH`, `DELETE` et le retrait
+  du visage. 4 tests, dont deux `PATCH` concurrents sur deux connexions.
 
-### 0.6.4 `StateBus.publish` depuis le threadpool — M
+### 0.6.6 Divers — 2 points restent ouverts
 
-`/state/report` est un endpoint **synchrone** : il appelle `bus.publish` depuis
-le threadpool, alors que `publish` manipule un `asyncio.Queue` (non
-thread-safe) et incrémente `_seq` sans verrou. Le réveil SSE peut être retardé
-jusqu'au `: ping` suivant (15 s), et deux publications peuvent produire le même
-`seq`. Chemin exercé à **chaque transaction réussie**.
-
-- [ ] **`report_state` en `async def`, ou `loop.call_soon_threadsafe`** — S
-  **Acceptation** : `test_state_bus.py` couvre `publish` depuis un thread ;
-  les `seq` restent strictement croissants.
-
-### 0.6.5 Garde « dernier administrateur » non atomique — M
-
-Deux admins peuvent se rétrograder mutuellement en parallèle : chacun lit
-`active_admins() == 2`, chacun passe, il en reste 0. Et `active_admins()`
-compte les admins **sans visage enrôlé**, alors que la connexion l'exige : on
-peut se retrouver sans personne capable de se connecter.
-
-- [ ] **Transaction + compter les admins avec visage** — S
-  **Acceptation** : deux `PATCH` concurrents sur les deux derniers admins →
-  un seul passe, l'autre reçoit 409.
-
-### 0.6.6 Divers (S)
-
-- [ ] `assert` → `if not ...: raise HTTPException` sur les listes blanches
-  (`shop-api`, `backoffice`) : correct aujourd'hui (clés littérales), mais un
-  `assert` disparaît avec `python -O`.
-- [ ] `db.run` : remplacer l'heuristique `"RETURNING" in sql.upper()` par un
-  paramètre explicite.
-- [ ] `_auto_probe_loop` émet 1 output interne toutes les 4 s et ne les retire
-  jamais (~21 600/jour). Borner.
-- [ ] `/tx/pay` n'est pas rate-limité et le port 8080 est publié : une boucle
-  d'appels fait croître le registre. La docstring dit « rate-limité par le WAF
-  en amont », ce qui est faux pour un accès direct.
-- [ ] `decoy_ids` : le plafond de 64 est testé APRÈS la recherche des inconnus
-  dans 1 million d'ids. Tester la longueur d'abord, et borner le corps.
-- [ ] `quarantine_outputs` retire 25 outputs par incident ; `_replenish_pool`
-  n'est appelé que par `/outputs?unspent=true`. Après ~20 incidents sans cet
-  appel, plus de leurres → 502 en boucle. Appeler `_replenish_pool` depuis
-  `get_decoys` / `pay_order`.
-- [ ] `random.seed(1337)` pour les leurres : sélection reproductible. Assumé
-  pour la démo, mais à remplacer par `SystemRandom` si l'anonymat est défendu.
+- [x] `assert` → exception explicite (`shop-api`, `backoffice`).
+- [x] `db.run` : paramètre `returning=` explicite, plus d'heuristique.
+- [x] `_auto_probe_loop` borné (`PROBE_OUTPUT_RETENTION`, 64) et purge au
+  démarrage.
+- [x] `/tx/pay` rate-limité par IP (`TX_PAY_RATE_LIMIT`, désactivé par défaut
+  pour ne pas fausser les mesures de charge) → 429 + `Retry-After`.
+- [x] `decoy_ids` borné à 64 **avant** tout traitement (422 Pydantic).
+- [x] `_replenish_pool` appelé depuis `/decoys` et `/tx/pay` sous seuil.
+- [ ] `random.seed(1337)` pour les leurres : reproductible, assumé pour la
+  démonstration. À remplacer par `SystemRandom` si l'anonymat est défendu.
+  **Décision** : on garde pour la démo, et on l'écrit en Q&A.
 - [ ] `test_alert_ingest.py` met `fingerprint` dans `labels`, alors que
-  l'Alertmanager réel le place au niveau de l'alerte : le repli `name:status`
-  est utilisé en production.
+  l'Alertmanager réel le place au niveau de l'alerte. Le repli `name:status`
+  est donc utilisé en production : le test ne couvre pas le vrai format.
+  **Effort S, à faire le 21/10** si la corrélation doit être montrée en réel.
 
 ## 0. Avant la soutenance — bloquant, à faire la veille
 
 Ces tâches ne sont pas du développement : sans elles, la démo peut échouer.
+**Le plan complet des trois jours est dans
+[`docs/PLAN-TRAITE-FINALE.md`](docs/PLAN-TRAITE-FINALE.md).**
+
+- [ ] **Lancer le pré-vol** — S (5 s)
+  ```powershell
+  python tools/preflight.py
+  ```
+  Vérifie les secrets (sans les afficher), le PIN transmis au conteneur, les 19
+  services, le catalogue illustré, le RAG, et refuse un dépôt sale.
+  **Acceptation** : code 0, « DÉMONTRABLE ».
 
 - [ ] **Recalibrer le ML sur le PC hôte de démonstration** — S (7 min)
   Le modèle actuel est calibré sur le poste de développement (1 129 fenêtres).
@@ -367,11 +356,11 @@ Reste à vérifier sur la pile démarrée :
 ### 1.4 RAG Ollama — fait (socle)
 
 `services/rag-assistant` (8091) : index **BM25** construit à la construction de
-l'image sur `docs/` + `README.md` + `TODO.md` (13 documents, 372 passages),
+l'image sur `docs/` + `README.md` + `TODO.md` (14 documents, 597 passages),
 `POST /ask` avec sources citées, 14 tests.
 
 **Écart assumé** : pas de base vectorielle (Chroma/FAISS) ni de LangChain.
-BM25 donne la même qualité sur un corpus de 13 documents, sans modèle à
+BM25 donne la même qualité sur un corpus de 14 documents, sans modèle à
 télécharger au build ni dépendance lourde. C'est écrit dans
 `services/rag-assistant/rag.py`.
 
@@ -405,9 +394,13 @@ paiements et le registre d'outputs.
 
 Reste :
 
-- [ ] **Panneaux Grafana « base de données »** — S
-  Connexions actives, taille de la base, requêtes lentes.
-  **Acceptation** : trois panneaux ajoutés au dashboard provisionné.
+- [x] **Panneaux Grafana « base de données »** — fait le 20/10 au soir
+  Connexions actives (`pg_stat_database_numbackends`), taille de la base
+  (`pg_database_size_bytes`), transactions longues
+  (`pg_stat_activity_max_tx_duration`). `pg_stat_statements` n'est pas activé :
+  le panneau ne prétend pas mesurer les « requêtes lentes », sa description
+  l'écrit. **Acceptation remplie** : 3 panneaux, JSON valide, 13 panneaux au
+  total, aucun chevauchement.
 
 ### 2.2 Loki / Promtail — fait
 
@@ -475,13 +468,17 @@ python tools/chaos.py --only ml    # un seul
 
 **Acceptation** : 6/6 `PASS` sur la pile Docker.
 
-### 2.5 Le quadrant « console Ansible » du dashboard est pauvre — S
+### 2.5 Le quadrant « console Ansible » du dashboard — partiel
 
-Il affiche `ansible_rc` et la durée, mais pas la sortie du playbook, alors que
-`/history` la contient (`ansible_stdout_tail`). Pendant le clip, voir les tâches
-défiler est un argument visuel fort.
+Le quadrant affiche désormais : l'état (`en cours · 3,2 s`), le diagnostic, les
+alertes corrélées, `ansible_rc`, et l'extrait `ansible_stdout_tail` de
+l'incident précédent. **La limite restante est côté moteur** : `_run_playbook`
+capture la sortie en bloc (`capture_output=True`) et n'écrit `/history` qu'à la
+fin ; il n'y a donc rien à afficher *pendant* l'exécution.
 
-**Où** : `front-dashboard/src/App.jsx`.
+**Correctif (½ h)** : lancer `ansible-playbook` en `Popen`, lire stdout ligne à
+ligne, republier `REMEDIATING` avec `detail.ansible_stdout_tail` (ring buffer
+~30 lignes) toutes les ~300 ms. Le front consomme déjà ce champ s'il apparaît.
 
 **Acceptation** : pendant `REMEDIATING`, les noms de tâches Ansible défilent.
 
@@ -517,7 +514,7 @@ Les 7 tests sont écrits mais n'ont pas été exécutés sur matériel.
 | `tools/fake_ansible.py` et `local-dev/crypto_shim.py` | marqués non livrables, utiles pour un poste sans Docker | garder |
 | `ansible.cfg` absent | Ansible fonctionne sans | si on ajoute des rôles |
 | Pas de CI (GitHub Actions) | le projet est un rendu, pas un produit | si le dépôt devient public |
-| Pas de `pre-commit` | 164 tests suffisent | optionnel |
+| Pas de `pre-commit` | 219 tests suffisent | optionnel |
 
 ---
 
@@ -526,33 +523,39 @@ Les 7 tests sont écrits mais n'ont pas été exécutés sur matériel.
 Ne pas perdre de temps dessus, c'est un choix documenté :
 
 - **Monero réel** (mainnet, nœud, sync) : le sujet parle d'un SI fictif.
-- **RGPD** : aucune donnée personnelle traitée (montants et clés uniquement).
+- **RGPD** : **deux traitements réels** depuis la consigne additionnelle —
+  descripteurs faciaux (données biométriques, art. 9) et journal d'audit du
+  back-office. Le dossier `docs/GOUVERNANCE.md` §8.4 décrit la minimisation,
+  la base légale et ce qui manque (registre de traitement, DPO, AIPD). Ce n'est
+  pas « aucune donnée personnelle » : c'était l'erreur du document précédent.
 - **Homologation / pen-test formel** : hors périmètre étudiant.
 - **Plan de formation, cellule de crise** : hors périmètre technique.
-- **MFA** : noté `NON COUVERT` dans le dossier de gouvernance ; le PIN est la
-  surface d'attaque volontairement faible qui alimente le ML.
+- **MFA** : le back-office **est** à deux facteurs (visage + mot de passe)
+  depuis la consigne additionnelle. Le **terminal de paiement**, lui, n'a qu'un
+  PIN : c'est la surface d'attaque volontairement faible qui alimente le ML, et
+  c'est écrit ainsi dans `docs/GOUVERNANCE.md` §8.1.
 - **WAF type ModSecurity/CRS** : nous avons écrit un proxy de déception sur
   mesure, ce qui est plus démontrable qu'une image OWASP non configurée.
 
 ---
 
-## 6. Ordre d'exécution recommandé
+## 6. Ordre d'exécution — les trois jours qui restent
+
+Le plan détaillé, heure par heure, est dans
+[`docs/PLAN-TRAITE-FINALE.md`](docs/PLAN-TRAITE-FINALE.md).
 
 ```
-Fait        0.5 nouvelles règles du jury           ← boutique, RAG, SIEM, durcissement
-            (reste : e2e boutique sur PostgreSQL, Ollama réel)
-Semaine 1   §0 (recalibrage + 3 répétitions)       ← bloquant, 1 h
-            0.5.2 e2e boutique + concurrence       ← ½ j, prouve que l'achat marche
-            1.2 AppRole Vault                      ← ½ j, gain immédiat en Q&A
-Semaine 2   vérifier le registre sur Docker         ← ½ j, confirme §1.3 en réel
-            0.5.2 e2e boutique sur PostgreSQL       ← ½ j, prouve l'achat en pile
-Semaine 3   0.5.3 Ollama réel sur le PC IA          ← 2 j, complète le pilier IA/DATA
-            1.1 Bulletproofs                        ← 3-5 j, seule faille crypto
-Semaine 4   §3 objet physique                       ← 1 j, non bloquant
-            Passe finale : §0 + 0.5                 ← obligatoire la veille
+J3 (21/10)  Docker : build, up, preflight, e2e_demo ×3, e2e_shop, attaques,
+            chaos 6/6, charge PostgreSQL, Loki, registre, idempotence,
+            recalibrage ML, caméra + firmware + hotspot
+J4 (22/10)  Démonstration : storyboard 60 s ×3, Clip Chrono, Q&A,
+            Ollama (si PC IA), AppRole (si tout est vert), répétition en salle
+J5 (23/10)  Livraison : gel, suite complète, secrets, ZIP, PDF, dernière
+            répétition, plan B, tag v1.0-demo
 ```
 
-**Si le temps manque** : §0, puis 0.5.2 (e2e boutique), puis 0.5.1 (audit
-sécurité). Ce sont les trois lignes qui coûtent le moins et qui rapportent le
-plus : ne pas perdre la démo, prouver que l'achat fonctionne, prouver que le SI
-n'a pas de trou connu.
+**Si le temps manque**, l'ordre est : preflight + 3 répétitions (ne pas perdre
+la démo), e2e boutique (prouver que l'achat fonctionne), puis le reste. Tout ce
+qui n'est pas fait doit être **écrit** dans ce fichier ou dans
+`docs/GOUVERNANCE.md` : une limite écrite ne coûte pas de point, une limite
+découverte en Q&A en coûte.
