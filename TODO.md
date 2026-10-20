@@ -25,12 +25,12 @@ changeaient l'architecture :
 | N2 | **Front** qui présente des articles (en base) | **livré** | `GET /products`, catalogue de 6 articles en base |
 | N3 | **Back** qui gère tout cela | **livré** | `front-dashboard/src/shop/AdminShop.jsx` + `/admin/products`, `/admin/orders` |
 | N4 | **Paiement en ligne** avec stockage, **historique** des achats et des paiements | **livré** | `POST /checkout` → `payment-api /tx/pay` (bLSAG) → tables `orders`, `payments`, `payment_events` |
-| N5 | SI **invulnérable**, aucune faille volontaire | **livré (1ʳᵉ passe)** | §0.5.1 : 6 failles réelles fermées (F1-F6) + F7 dans `docs/SECURITE.md` |
+| N5 | SI **invulnérable**, aucune faille volontaire | **livré (1ʳᵉ passe)** | §0.5.1 : 7 failles réelles fermées |
 | N6 | **IA** : RAG, surveillance des alertes SIEM, remédiation autonome | **livré (socle)** | `services/rag-assistant`, `POST /alert` + Alertmanager → playbook |
 
 ### 0.5.1 Failles réelles fermées (N5)
 
-Ces six points n'étaient pas des « failles de démonstration » : c'étaient des
+Ces sept points n'étaient pas des « failles de démonstration » : c'étaient des
 trous qu'un jury CYBER exploite en quelques minutes.
 
 | Faille | Exploit avant correction | Correction |
@@ -41,9 +41,10 @@ trous qu'un jury CYBER exploite en quelques minutes.
 | **PIN `1234` codé en dur** | terminal ouvert avec une valeur publique | `TERMINAL_PIN` généré par `tools/init_env.py`, blocage après 5 échecs |
 | **Anneau non borné** sur `/tx/submit` | 100 000 leurres = saturation CPU | plafond à 64 leurres |
 | `/ingest` du détecteur **ouvert** | évasion : diluer la fenêtre pour empêcher la détection | `SERVICE_TOKEN` obligatoire |
+| **Entrées non strictes** (boutique) | quantité `"3"` convertie silencieusement ; SKU `X'; DROP TABLE …` stocké | `strict=True` sur les entiers, motif sur le SKU → 422 |
 
 - [x] **Audit de sécurité systématique** — M
-  `docs/SECURITE.md` : 6 failles fermées (chacune avec son test), mesures par
+  `docs/SECURITE.md` : **7 failles fermées** (chacune avec son test), mesures par
   catégorie (auth, autorisation, données, en-têtes, secrets), **7 limites
   assumées et écrites**, et une recette CYBER en 6 commandes `curl`.
   **Reste** : un audit externe, hors périmètre étudiant.
