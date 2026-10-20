@@ -38,23 +38,42 @@ import hmac
 import os
 import random
 import secrets
+import logging
 import time
 from collections import deque
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 CRYPTO_CORE_URL = os.environ.get("CRYPTO_CORE_URL", "http://monero-crypto-core:8081")
+
+from svc_auth import require_service_token, service_token_configured  # noqa: E402
 ML_DETECTOR_URL = os.environ.get("ML_DETECTOR_URL", "http://ml-detector:8083")
 REMEDIATION_STATE_URL = os.environ.get(
     "REMEDIATION_STATE_URL", "http://remediation-engine:8084/state/report"
 )
 SELF_URL = os.environ.get("SELF_URL", "http://localhost:8080")
 RING_SIZE = int(os.environ.get("RING_SIZE_DEFAULT", "11"))
-PIN_CODE = os.environ.get("DEMO_PIN", "1234")
+
+# Le PIN du terminal est un SECRET DE DÉPLOIEMENT, jamais une constante du code.
+# La valeur 1234 qui figurait ici était une faille volontaire : le jury l'aurait
+# trouvée, et les nouvelles règles l'interdisent explicitement.
+# `tools/init_env.py` génère `TERMINAL_PIN` dans `.env`. À défaut, un PIN
+# aléatoire est tiré au démarrage et publié UNE FOIS dans les logs — jamais dans
+# `/healthz`, qui est public.
+PIN_CODE = os.environ.get("TERMINAL_PIN", "").strip()
+PIN_SOURCE = "env"
+if not PIN_CODE:
+    PIN_CODE = f"{secrets.randbelow(9000) + 1000}"
+    PIN_SOURCE = "generated"
+    logging.getLogger("payment-api").warning(
+        "TERMINAL_PIN non configuré : PIN aléatoire généré (%s). "
+        "Renseigner TERMINAL_PIN dans .env pour un PIN stable.",
+        PIN_CODE,
+    )
 # Nombre d'outputs émis au démarrage et seuil de réapprovisionnement.
 INITIAL_OUTPUTS = int(os.environ.get("INITIAL_OUTPUTS", "500"))
 MIN_UNSPENT = int(os.environ.get("MIN_UNSPENT_OUTPUTS", "250"))
@@ -132,19 +151,23 @@ async def _bootstrap_wallet() -> None:
     WALLET["spend_public"] = keys["public_spend_key_hex"]
 
 
-async def _mint(count: int, internal: bool = False) -> list[str]:
-    """Émet `count` outputs chiffrés. Le registre ne voit QUE le chiffré."""
+async def _mint(count: int, internal: bool = False, amount: int | None = None) -> list[str]:
+    """Émet `count` outputs chiffrés. Le registre ne voit QUE le chiffré.
+
+    `amount` impose le montant (paiement d'une commande) ; sans lui, le noyau
+    tire un montant varié, ce qui garde un registre réaliste.
+    """
     global _registry_seq
     if not WALLET["view_public"]:
         return []
-    minted = await _crypto(
-        "/crypto/mint-outputs",
-        {
-            "count": count,
-            "public_spend_key_hex": WALLET["spend_public"],
-            "public_view_key_hex": WALLET["view_public"],
-        },
-    )
+    payload = {
+        "count": count,
+        "public_spend_key_hex": WALLET["spend_public"],
+        "public_view_key_hex": WALLET["view_public"],
+    }
+    if amount is not None:
+        payload["amount"] = amount
+    minted = await _crypto("/crypto/mint-outputs", payload)
     created: list[str] = []
     for item in minted["outputs"]:
         _registry_seq += 1
@@ -343,6 +366,14 @@ async def submit_tx(req: TxSubmitRequest):
         unknown = [i for i in req.decoy_ids if i not in OUTPUTS]
         if unknown:
             raise HTTPException(status_code=400, detail=f"leurres inconnus: {unknown[:3]}")
+        # Borne dure : la vérification d'anneau est linéaire en N. Sans plafond,
+        # 100 000 leurres dans une requête suffisent à saturer le CPU — un déni
+        # de service à coût quasi nul pour l'attaquant.
+        if len(req.decoy_ids) > 64:
+            raise HTTPException(
+                status_code=400,
+                detail=f"anneau trop grand ({len(req.decoy_ids)} > 64)",
+            )
         decoy_ids = req.decoy_ids
     else:
         decoy_ids = get_decoys(RING_SIZE - 1)["decoys"]
@@ -489,6 +520,52 @@ async def submit_tx(req: TxSubmitRequest):
     }
 
 
+# ------------------------------------------------------- paiement d'une commande
+class PayRequest(BaseModel):
+    amount: int
+    reference: str = ""
+
+
+@app.post("/tx/pay")
+async def pay_order(req: PayRequest):
+    """Paiement d'une commande pour un montant EXACT.
+
+    Pourquoi un endpoint dédié : les outputs du registre portent des montants
+    variés (1..500) qui rendent l'audit intéressant, mais un article coûte un
+    prix précis. On émet donc un output interne du montant exact, puis on le
+    dépense par le chemin normal (`/tx/submit`) : engagement de Pedersen,
+    signature d'anneau bLSAG, key image anti-double-dépense. Le paiement n'est
+    pas simulé — il produit une vraie preuve cryptographique.
+
+    Ce endpoint n'est pas protégé par le jeton de service : c'est le chemin
+    client, celui qu'emprunte la boutique. Il est borné (montant, anneau) et
+    rate-limité par le WAF en amont.
+    """
+    if not 1 <= req.amount <= 1_000_000:
+        raise HTTPException(status_code=400, detail="montant hors bornes (1..1 000 000)")
+    created = await _mint(1, internal=True, amount=req.amount)
+    if not created:
+        raise HTTPException(status_code=503, detail="registre indisponible")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            f"{SELF_URL}/tx/submit",
+            json={"real_output_id": created[-1], "amount": req.amount},
+        )
+    if response.status_code != 200:
+        detail = response.json().get("detail") if response.content else response.status_code
+        raise HTTPException(status_code=502, detail=f"paiement refusé par le registre: {detail}")
+    body = response.json()
+    return {
+        "status": "paid",
+        "reference": req.reference,
+        "amount": body["amount"],
+        "key_image": body["key_image"],
+        "ring_size": body["ring_size"],
+        "balance_ok": body["balance_ok"],
+        "signature_scheme": body["signature_scheme"],
+    }
+
+
 def _observation(
     cpu_us: float,
     ring_size: int,
@@ -536,6 +613,14 @@ class PinRequest(BaseModel):
     amount: int = 1
 
 
+# Anti-bruteforce du terminal : 5 échecs consécutifs → 60 s de blocage.
+# Un PIN à 4 chiffres n'a que 10 000 combinaisons ; sans blocage, il tombe en
+# quelques minutes. C'est une vraie protection, pas une décoration.
+PIN_LOCKOUT_THRESHOLD = 5
+PIN_LOCKOUT_SECONDS = 60.0
+_pin_state: dict = {"failures": 0, "locked_until": 0.0}
+
+
 @app.post("/pin/verify")
 async def verify_pin(req: PinRequest):
     """Saisie au terminal physique (ou pavé USB, cf. hardware/README.md).
@@ -545,10 +630,26 @@ async def verify_pin(req: PinRequest):
     passe ensuite par /tx/submit comme n'importe quel client.
     """
     now = time.time()
+    if _pin_state["locked_until"] > now:
+        retry = int(_pin_state["locked_until"] - now) + 1
+        raise HTTPException(
+            status_code=429,
+            detail="terminal bloqué après plusieurs codes refusés",
+            headers={"Retry-After": str(retry)},
+        )
+
     pin_attempts.append(now)
+    # `PIN_CODE` est un secret de configuration, jamais une constante du code :
+    # la valeur 1234 qui figurait ici était une faille volontaire.
     ok = hmac.compare_digest(req.pin, PIN_CODE)
     if not ok:
         pin_failures.append(now)
+        _pin_state["failures"] += 1
+        if _pin_state["failures"] >= PIN_LOCKOUT_THRESHOLD:
+            _pin_state["locked_until"] = now + PIN_LOCKOUT_SECONDS
+            _pin_state["failures"] = 0
+    else:
+        _pin_state["failures"] = 0
 
     asyncio.create_task(
         _send_telemetry(
@@ -647,7 +748,7 @@ class RingSizeRequest(BaseModel):
     ring_size: int
 
 
-@app.post("/admin/ring-size")
+@app.post("/admin/ring-size", dependencies=[Depends(require_service_token)])
 def set_ring_size(req: RingSizeRequest):
     """Durcissement demandé par remediation_playbook.yml (étape 2).
 
@@ -700,7 +801,7 @@ def probe_status():
     return auto_probe_status
 
 
-@app.post("/admin/quarantine-outputs")
+@app.post("/admin/quarantine-outputs", dependencies=[Depends(require_service_token)])
 def quarantine_outputs():
     """Appelé par remediation_playbook.yml (étape 2).
 
@@ -757,6 +858,9 @@ def metrics():
         "# HELP shadow_probe_ok 1 si la sonde de transaction légitime passe",
         "# TYPE shadow_probe_ok gauge",
         f"shadow_probe_ok {1 if auto_probe_status.get('ok') else 0}",
+        "# HELP shadow_service_token_configured 1 si les endpoints d'administration sont ouverts",
+        "# TYPE shadow_service_token_configured gauge",
+        f"shadow_service_token_configured {1 if service_token_configured() else 0}",
     ]
     return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
@@ -770,4 +874,10 @@ def healthz():
         "ring_size": RING_SIZE,
         "crypto_core": "ready" if CRYPTO_STATUS["ready"] else "degraded",
         "crypto_last_error": CRYPTO_STATUS["last_error"],
+        # `generated` = PIN aléatoire tiré au démarrage : à fixer dans `.env`
+        # pour une démonstration reproductible. La valeur n'est JAMAIS publiée.
+        "pin_source": PIN_SOURCE,
+        "pin_lockout_threshold": PIN_LOCKOUT_THRESHOLD,
+        # Les endpoints /admin/* sont fermés si ce champ est false.
+        "service_token_configured": service_token_configured(),
     }

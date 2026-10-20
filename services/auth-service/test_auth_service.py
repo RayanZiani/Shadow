@@ -2,10 +2,16 @@
 
     python -m pytest test_auth_service.py -v
 
-Ce qui compte pour la grille (CYBER : gestion des secrets) : le service doit
-DIRE d'où vient sa clé. Un fallback silencieux ferait signer la démo avec une
-clé de dev pendant que le dossier technique prétend que Vault est branché.
+Deux choses sont vérifiées ici :
+
+1. **La provenance de la clé** (CYBER, gestion des secrets) : le service doit
+   DIRE d'où vient sa clé. Un fallback silencieux ferait signer la démo avec
+   une clé de dev pendant que le dossier technique prétend que Vault est branché.
+2. **L'authentification du marchand** : la version d'origine acceptait
+   n'importe quel `api_secret` et délivrait un JWT valide. C'était une
+   authentification décorative — un test le verrouille désormais.
 """
+import hashlib
 import time
 
 import pytest
@@ -13,12 +19,20 @@ from fastapi.testclient import TestClient
 
 import main
 
+SECRET = "secret-terminal-1-tres-long"
+
 
 @pytest.fixture(autouse=True)
-def reset_cache():
+def reset_state(monkeypatch):
     main._key_cache.update(value=None, fetched_at=0.0, source=None)
+    main._login_attempts.clear()
+    monkeypatch.setenv(
+        "MERCHANT_SECRETS",
+        '{"terminal-1": "%s"}' % hashlib.sha256(SECRET.encode()).hexdigest(),
+    )
     yield
     main._key_cache.update(value=None, fetched_at=0.0, source=None)
+    main._login_attempts.clear()
 
 
 @pytest.fixture()
@@ -31,6 +45,7 @@ def test_sans_token_le_service_annonce_le_fallback(client, monkeypatch):
     body = client.get("/healthz").json()
     assert body["status"] == "ok"
     assert body["jwt_key_source"] == "fallback_env"
+    assert body["merchants_configured"] == 1
 
 
 def test_login_renvoie_un_jwt_valide(client, monkeypatch):
@@ -38,18 +53,64 @@ def test_login_renvoie_un_jwt_valide(client, monkeypatch):
 
     monkeypatch.setattr(main, "VAULT_TOKEN", None)
     monkeypatch.setenv("JWT_SIGNING_KEY_CACHE", "cle-de-test")
-    main._key_cache.update(value=None, fetched_at=0.0, source=None)
 
-    token = client.post(
-        "/auth/login", json={"merchant_id": "terminal-1", "api_secret": "x"}
-    ).json()["access_token"]
+    response = client.post(
+        "/auth/login", json={"merchant_id": "terminal-1", "api_secret": SECRET}
+    )
+    assert response.status_code == 200, response.text
+    token = response.json()["access_token"]
     claims = jwt.decode(token, "cle-de-test", algorithms=["HS256"])
     assert claims["sub"] == "terminal-1"
     assert claims["exp"] - claims["iat"] == 300
 
 
+def test_mauvais_secret_refuse(client, monkeypatch):
+    """Le cœur de la correction : un identifiant connu ne suffit plus."""
+    monkeypatch.setattr(main, "VAULT_TOKEN", None)
+    response = client.post(
+        "/auth/login", json={"merchant_id": "terminal-1", "api_secret": "mauvais"}
+    )
+    assert response.status_code == 401
+    assert "access_token" not in response.text
+
+
+def test_identifiant_inconnu_refuse_sans_reveler_lexistence(client, monkeypatch):
+    monkeypatch.setattr(main, "VAULT_TOKEN", None)
+    response = client.post(
+        "/auth/login", json={"merchant_id": "terminal-42", "api_secret": SECRET}
+    )
+    assert response.status_code == 401
+    # Même message qu'un mauvais secret : pas d'énumération des marchands.
+    assert response.json()["detail"] == "identifiants invalides"
+
+
+def test_sans_table_de_secrets_le_service_refuse_de_signer(client, monkeypatch):
+    """Fail-closed : pas de configuration = pas d'authentification, pas un bypass."""
+    monkeypatch.setattr(main, "VAULT_TOKEN", None)
+    monkeypatch.delenv("MERCHANT_SECRETS", raising=False)
+    response = client.post(
+        "/auth/login", json={"merchant_id": "terminal-1", "api_secret": SECRET}
+    )
+    assert response.status_code == 503
+    assert "MERCHANT_SECRETS" in response.json()["detail"]
+
+
 def test_merchant_vide_refuse(client):
     assert client.post("/auth/login", json={"merchant_id": "", "api_secret": "x"}).status_code == 401
+
+
+def test_le_bruteforce_est_limite(client, monkeypatch):
+    monkeypatch.setattr(main, "VAULT_TOKEN", None)
+    codes = [
+        client.post(
+            "/auth/login", json={"merchant_id": "terminal-1", "api_secret": f"essai-{i}"}
+        ).status_code
+        for i in range(main.LOGIN_MAX_ATTEMPTS + 2)
+    ]
+    assert codes[-1] == 429
+    assert client.post(
+        "/auth/login", json={"merchant_id": "terminal-1", "api_secret": SECRET}
+    ).status_code == 429
 
 
 def test_vault_injoignable_produit_503_pas_un_fallback_silencieux(client, monkeypatch):
@@ -58,7 +119,9 @@ def test_vault_injoignable_produit_503_pas_un_fallback_silencieux(client, monkey
     monkeypatch.setattr(main, "VAULT_ADDR", "http://127.0.0.1:1")
     main._key_cache.update(value=None, fetched_at=0.0, source=None)
 
-    response = client.post("/auth/login", json={"merchant_id": "m", "api_secret": "x"})
+    response = client.post(
+        "/auth/login", json={"merchant_id": "terminal-1", "api_secret": SECRET}
+    )
     assert response.status_code == 503
     assert "Vault" in response.json()["detail"]
 

@@ -8,12 +8,14 @@ import random
 import time
 from collections import deque
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("shadow-api")
 
 app = FastAPI(title="shadow-api")
+
+from svc_auth import require_service_token  # noqa: E402
 
 # Borne mémoire : un attaquant qui tape 10 000 requêtes ne doit pas faire
 # grossir indéfiniment le journal du honeypot (et donc la réponse du dashboard).
@@ -50,7 +52,7 @@ async def fake_submit(request: Request):
     return {"status": "confirmed", "key_image": f"canary_ki_{random.randint(100000,999999)}"}
 
 
-@app.get("/admin/interceptions")
+@app.get("/admin/interceptions", dependencies=[Depends(require_service_token)])
 def list_interceptions():
     """Lu par le dashboard pour afficher le flux d'interception en direct."""
     return {"count": len(intercepted_log), "entries": list(intercepted_log)[-50:]}
@@ -72,4 +74,8 @@ def metrics():
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        # false = /admin/interceptions fermé (503) : renseigner SERVICE_TOKEN.
+        "service_token_configured": bool(os.environ.get("SERVICE_TOKEN", "").strip()),
+    }

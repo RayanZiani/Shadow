@@ -52,7 +52,9 @@ def client(monkeypatch):
                 main.OUTPUTS[output_id]["internal"] = True
 
     monkeypatch.setattr(main, "_mint", fake_mint)
-    return TestClient(main.app)
+    # Les endpoints /admin/* exigent le jeton de service (fail-closed sinon).
+    monkeypatch.setenv("SERVICE_TOKEN", "jeton-de-test")
+    return TestClient(main.app, headers={"X-Service-Token": "jeton-de-test"})
 
 
 def _register(n: int = 50) -> None:

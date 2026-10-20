@@ -13,11 +13,15 @@ Ce test vérifie :
 """
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
 
 from main import StateBus, app
+
+# /state/report exige le jeton de service (fail-closed sans lui).
+os.environ["SERVICE_TOKEN"] = "jeton-de-test"
 
 
 @pytest.fixture()
@@ -66,13 +70,19 @@ def test_abonne_lent_ne_bloque_pas(bus):
 @pytest.fixture()
 def client():
     transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://test")
+    return httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-Service-Token": "jeton-de-test"},
+    )
 
 
 def test_rapport_normal_tx_refuse_pendant_incident():
     async def scenario():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"X-Service-Token": "jeton-de-test"},
         ) as client:
             from main import bus as live_bus
 
@@ -89,7 +99,9 @@ def test_rapport_normal_tx_refuse_pendant_incident():
 def test_rapport_etat_interdit_refuse():
     async def scenario():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"X-Service-Token": "jeton-de-test"},
         ) as client:
             response = await client.post("/state/report", json={"state": "RECOVERED_TX"})
             assert response.status_code == 400

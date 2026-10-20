@@ -23,8 +23,10 @@ def reset_state():
 
 
 @pytest.fixture()
-def client():
-    return TestClient(main.app)
+def client(monkeypatch):
+    # Les routes /admin/* exigent le jeton de service (fail-closed sinon).
+    monkeypatch.setenv("SERVICE_TOKEN", "jeton-de-test")
+    return TestClient(main.app, headers={"X-Service-Token": "jeton-de-test"})
 
 
 class FakeResponse:

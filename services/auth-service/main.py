@@ -16,11 +16,15 @@ Bootstrap Vault (une fois, en dev) :
 
 Puis `VAULT_TOKEN=<token> docker compose up -d auth-service`.
 """
+import hashlib
+import hmac
+import json
 import os
 import time
+from collections import defaultdict, deque
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from jose import jwt
 from pydantic import BaseModel
 
@@ -33,12 +37,76 @@ JWT_ALGO = "HS256"
 # à chaque login, mais on expire le cache pour prendre en compte une rotation.
 KEY_CACHE_SECONDS = float(os.environ.get("JWT_KEY_CACHE_SECONDS", "30"))
 
+# Anti-bruteforce : 10 tentatives par minute et par IP. Sans cela, un secret de
+# 32 octets reste hors de portée, mais un secret faible tomberait en quelques
+# heures — et le service sert de porte d'entrée aux terminaux.
+LOGIN_WINDOW_SECONDS = 60.0
+LOGIN_MAX_ATTEMPTS = 10
+_login_attempts: dict[str, deque[float]] = defaultdict(deque)
+
 _key_cache: dict = {"value": None, "fetched_at": 0.0, "source": None}
 
 
 class LoginRequest(BaseModel):
     merchant_id: str
-    api_secret: str  # à vérifier contre Vault, pas une valeur en dur
+    api_secret: str
+
+
+def _merchant_secret_hashes() -> dict[str, str]:
+    """Table `merchant_id -> sha256(secret)` lue dans l'environnement.
+
+    Format : `MERCHANT_SECRETS='{"terminal-1": "<sha256 hex>"}'`.
+    Un secret d'API est à haute entropie : SHA-256 suffit (pas de PBKDF2, qui
+    est fait pour des mots de passe humains). La comparaison reste à temps
+    constant.
+    """
+    raw = os.environ.get("MERCHANT_SECRETS", "").strip()
+    if not raw:
+        return {}
+    try:
+        table = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(table, dict):
+        return {}
+    return {str(key): str(value).lower() for key, value in table.items()}
+
+
+def _rate_limited(client_ip: str) -> bool:
+    now = time.time()
+    window = _login_attempts[client_ip]
+    while window and now - window[0] > LOGIN_WINDOW_SECONDS:
+        window.popleft()
+    if len(window) >= LOGIN_MAX_ATTEMPTS:
+        return True
+    window.append(now)
+    return False
+
+
+def _verify_merchant(merchant_id: str, api_secret: str) -> bool:
+    """Vérifie le secret du marchand. Fail-closed si rien n'est configuré.
+
+    La version d'origine acceptait N'IMPORTE QUEL `api_secret` : le service
+    délivrait un JWT valide à qui connaissait un simple identifiant. C'était une
+    authentification décorative — corrigée ici, et couverte par un test.
+    """
+    table = _merchant_secret_hashes()
+    if not table:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "MERCHANT_SECRETS non configuré : aucun login possible. "
+                "Renseigner la table des secrets (voir .env.example)."
+            ),
+        )
+    expected = table.get(merchant_id)
+    if expected is None:
+        # Hachage factice : même temps de réponse pour un identifiant inconnu,
+        # sinon on peut énumérer les marchands par chronométrage.
+        hashlib.sha256(api_secret.encode("utf-8")).hexdigest()
+        return False
+    provided = hashlib.sha256((api_secret or "").encode("utf-8")).hexdigest()
+    return hmac.compare_digest(provided, expected)
 
 
 def _fetch_signing_key() -> tuple[str, str]:
@@ -75,11 +143,19 @@ def _fetch_signing_key() -> tuple[str, str]:
 
 
 @app.post("/auth/login")
-def login(req: LoginRequest):
-    # TODO (vous) : vérifier req.api_secret contre la valeur stockée (hashée)
-    # pour ce merchant_id, en base ou dans Vault.
+def login(req: LoginRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    if _rate_limited(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="trop de tentatives de connexion, réessayez dans une minute",
+            headers={"Retry-After": str(int(LOGIN_WINDOW_SECONDS))},
+        )
+
     if not req.merchant_id:
         raise HTTPException(status_code=401, detail="merchant inconnu")
+    if not _verify_merchant(req.merchant_id, req.api_secret):
+        raise HTTPException(status_code=401, detail="identifiants invalides")
 
     key, _ = _fetch_signing_key()
     payload = {
@@ -121,4 +197,6 @@ def healthz():
         "status": "ok" if key_ok else "degraded",
         "jwt_key_source": source,
         "vault_addr": VAULT_ADDR,
+        "merchants_configured": len(_merchant_secret_hashes()),
+        "service_token_configured": bool(os.environ.get("SERVICE_TOKEN", "").strip()),
     }

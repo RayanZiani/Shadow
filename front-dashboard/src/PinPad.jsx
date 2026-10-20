@@ -113,7 +113,8 @@ export default function PinPad({ apiBase, onTransaction }) {
         </p>
       )}
       <p className="mt-2 text-center text-ink/50 text-[11px]">
-        code de démonstration : 1234 · un refus alimente le ML
+        code du terminal : voir <code>TERMINAL_PIN</code> dans <code>.env</code> ·
+        un refus alimente le ML
       </p>
     </div>
   );

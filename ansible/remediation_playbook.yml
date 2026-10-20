@@ -48,6 +48,8 @@
       uri:
         url: "http://waf:8085/admin/redirect"
         method: POST
+        headers:
+          X-Service-Token: "{{ lookup('env', 'SERVICE_TOKEN') }}"
         body_format: json
         body:
           target: "shadow-api:8090"
@@ -63,6 +65,8 @@
       uri:
         url: "http://payment-api:8080/admin/quarantine-outputs"
         method: POST
+        headers:
+          X-Service-Token: "{{ lookup('env', 'SERVICE_TOKEN') }}"
       register: quarantine
       # Pas de ignore_errors : si la quarantaine échoue, la remédiation n'a
       # rien corrigé et le playbook doit le dire (rc != 0 -> REMEDIATION_FAILED).
@@ -71,6 +75,8 @@
       uri:
         url: "http://payment-api:8080/admin/ring-size"
         method: POST
+        headers:
+          X-Service-Token: "{{ lookup('env', 'SERVICE_TOKEN') }}"
         body_format: json
         body:
           ring_size: "{{ ring_size_hardened }}"

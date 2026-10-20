@@ -35,13 +35,15 @@ import statistics
 import time
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 UPSTREAM = os.environ.get("WAF_UPSTREAM", "http://payment-api:8080")
 HONEYPOT = os.environ.get("WAF_HONEYPOT", "http://shadow-api:8090")
 DECOY_AGE_THRESHOLD = float(os.environ.get("DECOY_AGE_THRESHOLD", "8.0"))
+
+from svc_auth import require_service_token  # noqa: E402
 # Nombre d'âges mémorisés : au-delà, on purge les plus anciennes entrées.
 AGE_CACHE_MAX = 20000
 
@@ -100,7 +102,7 @@ def _is_suspicious(body: dict) -> tuple[bool, float | None]:
 
 
 # ------------------------------------------------------------------ admin
-@app.post("/admin/redirect")
+@app.post("/admin/redirect", dependencies=[Depends(require_service_token)])
 def redirect(req: RedirectRequest):
     """Active la déception : les transactions suspectes iront au honeypot.
 
@@ -116,7 +118,7 @@ def redirect(req: RedirectRequest):
     return {"status": "deception_active", **STATE}
 
 
-@app.post("/admin/reset")
+@app.post("/admin/reset", dependencies=[Depends(require_service_token)])
 def reset():
     """Désactive la déception (avant chaque répétition de la démo)."""
     STATE.update(
@@ -132,7 +134,7 @@ def reset():
     return {"status": "reset", **STATE}
 
 
-@app.get("/admin/state")
+@app.get("/admin/state", dependencies=[Depends(require_service_token)])
 def state():
     return {**STATE, "decoy_age_threshold_days": DECOY_AGE_THRESHOLD, "known_outputs": len(AGE_CACHE)}
 
@@ -168,6 +170,8 @@ def healthz():
         "upstream": UPSTREAM,
         "honeypot": HONEYPOT,
         "deception": STATE["deception"],
+        # false = /admin/* fermés (503) : renseigner SERVICE_TOKEN.
+        "service_token_configured": bool(os.environ.get("SERVICE_TOKEN", "").strip()),
     }
 
 

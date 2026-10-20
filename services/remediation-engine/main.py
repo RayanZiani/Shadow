@@ -16,9 +16,10 @@ import json
 import os
 import subprocess
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -106,6 +107,9 @@ _lock = asyncio.Lock()
 _current_incident = None  # IncidentPayload en cours, pour /healthz
 
 
+from svc_auth import require_service_token, service_token_configured  # noqa: E402
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Point d'entrée de l'état : le service démarre au repos.
@@ -148,7 +152,7 @@ class StateReport(BaseModel):
     detail: dict = {}
 
 
-@app.post("/incident")
+@app.post("/incident", dependencies=[Depends(require_service_token)])
 async def handle_incident(payload: IncidentPayload):
     """Reçoit l'incident et lance la remédiation en TÂCHE DE FOND.
 
@@ -166,6 +170,113 @@ async def handle_incident(payload: IncidentPayload):
     _current_incident = payload
     asyncio.create_task(_run_incident(payload))
     return {"accepted": True, "status": "remediation_started"}
+
+
+# ---------------------------------------------------------------------------
+# Ingestion SIEM : alertes Prometheus/Alertmanager → remédiation autonome
+# ---------------------------------------------------------------------------
+# C'est la réponse à « l'IA doit gérer les logs ou alertes des outils de
+# supervision de sorte à agir elle-même ». Prometheus évalue ses règles,
+# Alertmanager pousse ici, et le moteur déclenche le MÊME playbook que le
+# détecteur ML. Une alerte n'est donc pas seulement affichée : elle agit.
+#
+# Ce qui déclenche une remédiation est une liste FERMÉE. Une alerte de confort
+# (bandeau LED silencieux, compte bloqué) est journalisée mais n'ouvre pas un
+# incident : sinon le premier avertissement bénin lancerait un playbook.
+
+ACTIONABLE_ALERTS = {
+    "ModeleMLIndisponible": "model_unavailable",
+    "WebhookRemediationCasse": "webhook_broken",
+    "NoyauCryptoIndisponible": "crypto_unavailable",
+    "SondeTransactionEnEchec": "probe_failed",
+    "WafIndisponible": "waf_unavailable",
+    "DeceptionNonArmee": "deception_not_armed",
+    "ReconnaissanceFacialeIndisponible": "face_engine_unavailable",
+    "RemediationEnEchec": "remediation_failed",
+}
+
+# Alertmanager réémet la même alerte toutes les 4 h ; on borne les doublons.
+ALERT_COOLDOWN_SECONDS = 60.0
+_alert_history: deque[dict] = deque(maxlen=200)
+_last_alert_at: dict[str, float] = {}
+
+
+class AlertmanagerPayload(BaseModel):
+    status: str = "firing"
+    alerts: list[dict] = []
+
+
+@app.post("/alert", dependencies=[Depends(require_service_token)])
+async def handle_alert(payload: AlertmanagerPayload):
+    """Reçoit un webhook Alertmanager et agit si l'alerte est actionnable."""
+    received = time.time()
+    acted: list[dict] = []
+    ignored: list[dict] = []
+
+    for alert in payload.alerts:
+        labels = alert.get("labels") or {}
+        annotations = alert.get("annotations") or {}
+        name = str(labels.get("alertname", ""))
+        status = str(alert.get("status", payload.status))
+        fingerprint = str(labels.get("fingerprint") or f"{name}:{status}")
+
+        entry = {
+            "alertname": name,
+            "status": status,
+            "severity": labels.get("severity"),
+            "summary": annotations.get("summary"),
+            "received_at": received,
+            "diagnostic": ACTIONABLE_ALERTS.get(name),
+            "acted": False,
+        }
+
+        if status != "firing":
+            entry["reason"] = "resolved"
+            ignored.append(entry)
+            continue
+        if name not in ACTIONABLE_ALERTS:
+            entry["reason"] = "non_actionnable"
+            ignored.append(entry)
+            continue
+        if received - _last_alert_at.get(fingerprint, 0.0) < ALERT_COOLDOWN_SECONDS:
+            entry["reason"] = "anti_rebond"
+            ignored.append(entry)
+            continue
+        if _lock.locked():
+            entry["reason"] = "remediation_deja_en_cours"
+            ignored.append(entry)
+            continue
+
+        _last_alert_at[fingerprint] = received
+        entry["acted"] = True
+        acted.append(entry)
+
+        incident = IncidentPayload(
+            anomaly_score=0.0,
+            features=[0.0] * 6,
+            detected_at=received,
+            diagnostic=ACTIONABLE_ALERTS[name],
+        )
+        # On réutilise exactement le chemin de l'incident ML : même verrou,
+        # même playbook, même preuve de reprise. Un second chemin de
+        # remédiation finirait par diverger du premier.
+        asyncio.create_task(_run_incident(incident))
+
+    _alert_history.extend(acted + ignored)
+    return {
+        "received": len(payload.alerts),
+        "acted": len(acted),
+        "ignored": len(ignored),
+        "details": acted + ignored,
+    }
+
+
+@app.get("/alerts", dependencies=[Depends(require_service_token)])
+def list_alerts(limit: int = 50):
+    """Journal des alertes ingérées — consultable dans le dashboard et en Q&A."""
+    limit = max(1, min(int(limit), 200))
+    entries = list(_alert_history)[-limit:]
+    return {"count": len(_alert_history), "entries": entries}
 
 
 async def _run_incident(payload: IncidentPayload) -> None:
@@ -263,7 +374,7 @@ def state():
     return bus.current
 
 
-@app.post("/state/report")
+@app.post("/state/report", dependencies=[Depends(require_service_token)])
 def report_state(report: StateReport):
     """Rapport d'un fait vérifié par un autre service (typiquement payment-api
     qui confirme une transaction). Volontairement limité à NORMAL_TX : un
@@ -359,4 +470,7 @@ def healthz():
         "seq": bus.current["seq"],
         "remediation_in_progress": _lock.locked(),
         "last_incident": remediation_log[-1] if remediation_log else None,
+        # false = /incident et /state/report fermés (503) : renseigner
+        # SERVICE_TOKEN, sinon le détecteur ne peut plus déclencher le playbook.
+        "service_token_configured": service_token_configured(),
     }

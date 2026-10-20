@@ -19,6 +19,9 @@ scikit-learn==1.5.2
 joblib==1.4.2
 pytest==8.3.3
 pyserial==3.5
+# auth-service : signe les JWT. Nécessaire pour ses tests (ils décodent le
+# jeton). Sans cette ligne, `run_tests.sh` échouait à la collecte.
+python-jose[cryptography]==3.3.0
 # Reconnaissance faciale du back-office (consigne additionnelle). Version
 # "headless" : pas de serveur graphique requis. Les modèles ONNX ne sont pas
 # versionnés (38 Mo) : `python services/backoffice/fetch_models.py` les

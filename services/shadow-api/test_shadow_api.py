@@ -8,12 +8,16 @@ par la grille (CYBER : déception active) et par le playbook de remédiation.
 """
 from fastapi.testclient import TestClient
 
+import os
+
 import main
 
 
 def _client() -> TestClient:
     main.intercepted_log.clear()
-    return TestClient(main.app)
+    # /admin/interceptions exige le jeton de service (fail-closed sans lui).
+    os.environ["SERVICE_TOKEN"] = "jeton-de-test"
+    return TestClient(main.app, headers={"X-Service-Token": "jeton-de-test"})
 
 
 def test_decoys_renvoie_des_canaries_au_bon_format():

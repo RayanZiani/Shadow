@@ -369,6 +369,13 @@ async def _trigger_remediation(
     diagnostic = _diagnose(features)
     global _last_webhook_error
     try:
+        headers = {}
+        service_token = os.environ.get("SERVICE_TOKEN", "").strip()
+        if service_token:
+            # `/incident` est protégé : sans ce jeton, le moteur répond 401 et
+            # aucune remédiation n'a lieu. Le défaut est publié dans /healthz
+            # (`last_webhook_error`) et par l'alerte WebhookRemediationCasse.
+            headers["X-Service-Token"] = service_token
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(
                 REMEDIATION_WEBHOOK,
@@ -378,6 +385,7 @@ async def _trigger_remediation(
                     "detected_at": time.time(),
                     "diagnostic": diagnostic,
                 },
+                headers=headers,
             )
         logger.warning(
             "incident transmis à %s (diagnostic=%s, score=%.2f, http=%s)",

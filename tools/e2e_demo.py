@@ -35,6 +35,8 @@ import time
 
 import httpx
 
+import service_token
+
 PAYMENT = "http://localhost:8080"
 DETECTOR = "http://localhost:8083"
 REMEDIATION = "http://localhost:8084"
@@ -235,18 +237,28 @@ def wait_state(client: httpx.Client, expected: set[str], deadline: float) -> str
 
 def run() -> int:
     started = time.time()
+    auth = service_token.headers()
     with httpx.Client(timeout=15.0) as client:
         check_services(client)
 
         # Remise à zéro de la déception : chaque répétition part d'un WAF neutre.
-        try:
-            client.post(f"{WAF}/admin/reset")
-        except httpx.HTTPError:
-            pass
+        # Endpoint protégé : sans SERVICE_TOKEN, on s'arrête ici avec un message
+        # clair plutôt que de découvrir un 401 au milieu de la démonstration.
+        reset_response = client.post(f"{WAF}/admin/reset", headers=auth)
+        if reset_response.status_code != 200:
+            log(
+                f"ECHEC : /admin/reset -> HTTP {reset_response.status_code}. "
+                "Renseigner SERVICE_TOKEN dans .env (python tools/init_env.py)."
+            )
+            return 1
 
         baseline(client)
 
-        client.post(f"{REMEDIATION}/state/report", json={"state": "NORMAL_TX", "detail": {}})
+        client.post(
+            f"{REMEDIATION}/state/report",
+            json={"state": "NORMAL_TX", "detail": {}},
+            headers=auth,
+        )
 
         attack_started = time.time()
         attack(client)
@@ -280,7 +292,7 @@ def run() -> int:
         # Preuve 2 : l'attaquant, lui, est dérouté vers le honeypot.
         log("vérification de la déception active…")
         deception_ok = prove_deception(client)
-        waf_state = client.get(f"{WAF}/admin/state").json()
+        waf_state = client.get(f"{WAF}/admin/state", headers=auth).json()
 
         total_s = time.time() - started
 

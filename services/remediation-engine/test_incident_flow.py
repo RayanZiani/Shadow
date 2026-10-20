@@ -10,11 +10,18 @@ Vérifie le contrat que consomment le dashboard et le terminal :
   * un rapport NORMAL_TX ne peut pas masquer une attaque en cours.
 """
 import asyncio
+import os
 import subprocess
 
 import httpx
 
 import main
+
+# Les endpoints /incident et /state/report exigent le jeton de service
+# (fail-closed : sans jeton, ils répondent 503). Le jeton est lu à chaque appel,
+# donc le définir ici suffit pour tout le module.
+os.environ["SERVICE_TOKEN"] = "jeton-de-test"
+SERVICE_HEADERS = {"X-Service-Token": "jeton-de-test"}
 
 
 def _stub(returncode: int, stdout: str):
@@ -27,7 +34,9 @@ def _stub(returncode: int, stdout: str):
 
 def _client():
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main.app), base_url="http://test"
+        transport=httpx.ASGITransport(app=main.app),
+        base_url="http://test",
+        headers=SERVICE_HEADERS,
     )
 
 

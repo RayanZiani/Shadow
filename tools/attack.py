@@ -35,6 +35,8 @@ import time
 
 import httpx
 
+import service_token
+
 # Le PC Attaquant passe par le WAF : c'est le point d'entrée « client ».
 TARGET = "http://localhost:8085"
 DIRECT = "http://localhost:8080"
@@ -157,8 +159,20 @@ def attack_malformed(client: httpx.Client) -> dict:
 
 
 def reset(client: httpx.Client) -> int:
-    """Désarme la déception (à faire entre deux répétitions)."""
-    body = client.post(f"{TARGET}/admin/reset").json()
+    """Désarme la déception (à faire entre deux répétitions).
+
+    `/admin/reset` est protégé par `SERVICE_TOKEN` : un attaquant ne doit pas
+    pouvoir désarmer la déception pendant l'incident. L'outil lit le jeton dans
+    l'environnement ou dans `.env` (voir `tools/service_token.py`).
+    """
+    response = client.post(f"{TARGET}/admin/reset", headers=service_token.headers())
+    if response.status_code != 200:
+        log(
+            f"ECHEC : /admin/reset -> HTTP {response.status_code}. "
+            "Renseigner SERVICE_TOKEN dans .env (python tools/init_env.py)."
+        )
+        return 1
+    body = response.json()
     log(f"déception désarmée · état : {body.get('deception')}")
     return 0
 
