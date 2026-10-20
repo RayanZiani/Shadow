@@ -51,8 +51,8 @@ def main() -> int:
                 f"{PAYMENT}/tx/submit",
                 json={
                     "real_output_id": rng.choice(pool)["id"],
-                    "amount": 1,
-                    "spend_private_key_hex": "00" * 32,
+                    # Le montant fait foi côté portefeuille (déchiffré par la
+                    # View Key) : le client ne l'annonce plus.
                     "decoy_ids": decoys,
                 },
             )

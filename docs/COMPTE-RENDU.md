@@ -1,8 +1,14 @@
 # Compte rendu technique — SHADOW-SETTLE / RESILIENCE-ALPHA
 
 Date : 19-20 octobre 2026
-Périmètre : **P0 — chaîne attaque → détection → remédiation → preuve**
-Statut : **opérationnel, mesuré, et validé sur l'environnement Docker réel**
+Périmètre : **MVP — cinq piliers interconnectés, de l'attaque à la preuve**
+Statut : **opérationnel, mesuré, validé sur l'environnement Docker réel**
+
+Trois sessions :
+1. **Conception du pipeline ML** (poste sans Docker) — §4.
+2. **Validation sur l'environnement réel** — §9, sept pannes silencieuses.
+3. **Complétion du MVP** — §10 : cryptographie réelle, déception branchée,
+   observabilité, gouvernance.
 
 ---
 
@@ -15,12 +21,13 @@ marge est de 83 secondes sur l'objectif interne de 90 s.
 
 | Indicateur | Valeur mesurée (Docker, 3 exécutions) |
 |---|---|
-| Durée détection → reprise | 5,8 s / 6,6 s / 6,7 s |
+| Durée détection → reprise | 6,5 s / 6,7 s / 7,0 s |
 | Objectif interne | < 90 s |
 | Marge | ≈ 83 s |
 | Faux déclenchements sur trafic normal | **0 %** (0 déclenchement sur 180 fenêtres) |
 | Rappel sur les 4 familles d'attaques | 100 % (1 058 fenêtres d'attaque) |
-| Tests automatisés | **53**, tous verts (Python + Rust) |
+| Tests automatisés | **79**, tous verts (Python + Rust) |
+| Attaquant dérouté vers le honeypot | **oui** (vérifié par `e2e_demo.py`) |
 | Services Docker | 13, tous `Up` / `healthy` |
 
 Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
@@ -71,7 +78,12 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 
 ### 2.3 API de paiement (`services/payment-api`)
 
-- Registre d'outputs exposé publiquement (modèle de menace réaliste).
+- Registre d'outputs exposé publiquement : clé publique one-time + **montant
+  chiffré**. Un montant n'est lisible qu'avec la View Key.
+- Portefeuille de démonstration : le service joue le rôle du wallet (View Key +
+  Spend Key), dérive la clé one-time de l'output dépensé, signe un anneau réel.
+- `GET /audit/last` et `GET /audit/outputs/{id}` : audit **view-only**, sans
+  jamais utiliser la Spend Key.
 - **Tirage gamma** des leurres sur l'âge (remplace le `random.sample` uniforme
   du squelette, qui était un TODO explicite du README).
 - Anti-double-dépense par key image, avec télémétrie même en cas de rejet.
@@ -82,7 +94,8 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 - `POST /admin/ring-size` : durcissement réellement appliqué par le playbook.
 - Registre **ré-alimenté** automatiquement : deux démonstrations d'affilée ne
   l'épuisent plus.
-- `test_payment_api.py` : 8 tests (gamma, `unspent`, quarantaine, ring-size, PIN).
+- `test_payment_api.py` : 10 tests (gamma, `unspent`, quarantaine, ring-size,
+  PIN, non-exposition des clés privées).
 
 ### 2.4 Dashboard (`front-dashboard`)
 
@@ -90,7 +103,20 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
   séquence).
 - Quadrant « Radar ML » branché sur `/score` en temps réel.
 - Consommation SSE avec détection de coupure et numéro de séquence.
+- **Pavé PIN** (`PinPad.jsx`) : surface d'attaque physique sans démonter le
+  terminal, avec compteur de refus en direct.
+- **Quadrant « Audit view-only »** : montant déchiffré par la View Key seule.
 - Build de production vérifié.
+
+### 2.4 bis Point d'entrée et déception (`services/waf`)
+
+- Reverse proxy vers `payment-api`, **seul point d'entrée « client »**.
+- Apprend l'âge des outputs en proxyfiant `/outputs` ; calcule l'âge médian des
+  leurres de chaque transaction.
+- Déroute vers `shadow-api` **uniquement** quand le playbook a armé la
+  déception (`POST /admin/redirect`).
+- `POST /admin/reset`, `GET /admin/state`, `/metrics`.
+- 10 tests, dont **« le client légitime n'est jamais dérouté »**.
 
 ### 2.5 Objet physique (`hardware/`, `docs/hardware/`)
 
@@ -107,7 +133,10 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 
 - `tools/e2e_demo.py` : répétition générale chronométrée, avec 6 contrôles
   bloquants, et attente explicite d'une fenêtre propre avant mesure.
-- `tools/run_tests.sh` : lance les **53 tests** du dépôt (Python + Rust).
+- `tools/run_tests.sh` : lance les **79 tests** du dépôt (Python + Rust).
+- `tools/attack.py` : **PC Attaquant** — 4 familles d'attaques, `reset`.
+- `docs/DEMO.md` : runbook de soutenance (scénario, rôles, Q&A, plan de secours).
+- `observability/` : Prometheus (8 cibles, 11 alertes) + Grafana provisionné.
 - `tools/fake_ansible.py` : stub pour rejouer la chaîne sans Ansible.
 - `local-dev/` : lancement sans Docker, clairement marqué **non livrable**.
 - `requirements-dev.txt` + `docs/INSTALLATION-LOCAL.md` : installation du poste
@@ -115,10 +144,19 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 
 ### 2.7 Nouvelles briques testées
 
+- `services/monero-crypto-core` : **noyau cryptographique réel** — bLSAG, key
+  image, Pedersen, View Key. 8 tests Rust + 10 tests HTTP.
 - `services/auth-service` : clé JWT lue dans **Vault KV v2**, avec cache de 30 s
   et fallback **explicite** (`/healthz` dit `vault` ou `fallback_env`). 5 tests.
 - `services/shadow-api` : honeypot borné en mémoire, journal consultable.
   4 tests.
+- `observability/` : métriques `/metrics` sur 7 services, alertes, dashboard.
+
+### 2.8 Documentation de gouvernance
+
+- `docs/GOUVERNANCE.md` : EBIOS RM (5 ateliers), PCA/PRA avec RTO par service,
+  correspondance NIS2 art. 21 et DORA art. 5-28, risques résiduels,
+  recommandations chiffrées.
 
 ---
 
@@ -127,14 +165,17 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 ### 3.1 Répétition générale — environnement Docker complet
 
 ```
-detection_seconds      2.2   2.3   2.7
-recovery_seconds       6.3   6.3   6.2
+detection_seconds      3.0   3.5   3.7
+recovery_seconds       6.6   7.1   7.2
 proof_transaction_ok  true  true  true
+deception_active      true  true  true
+attacker_routed       true  true  true
 ansible_rc               0     0     0
 chain_complete        true  true  true
 ```
 
-13 conteneurs `Up`, Ansible réel (4,1 s de playbook), noyau Rust compilé.
+14 conteneurs `Up`, Ansible réel (4,1 s de playbook), noyau Rust bLSAG compilé,
+Prometheus et Grafana provisionnés.
 La stabilité compte autant que la vitesse : une démo qui marche une fois sur
 deux vaut zéro point. Trois exécutions consécutives donnent le même résultat
 parce que `e2e_demo.py` attend désormais une fenêtre de détection **vide** avant
@@ -144,32 +185,63 @@ de mesurer (voir §9.5).
 
 ```json
 {
-  "threshold": 4.9115,
+  "threshold": 4.6091,
   "calibration_set": "holdout_25pct",
   "score_function": "max(0.5*z_iso+0.5*z_ae, z_median_age)",
-  "n_normal": 1089,
+  "n_normal": 1129,
   "source": "capture:baseline.jsonl",
+  "threshold_estimators": {
+    "percentile_99.9": 4.6091,
+    "mean_plus_6std": 3.8721,
+    "retained": 4.6091
+  },
   "evaluation": {
-    "false_positive_rate": 0.002,
-    "false_positive_rate_3_consecutive": 0.0,
+    "false_positive_rate": 0.006,
+    "false_positive_rate_3_consecutive": 0.002,
     "attack_recall": 1.0
   }
 }
 ```
 
+**Changement d'estimateur, justifié par la mesure.** Le seuil était fixé au
+max du 99,5ᵉ percentile et de `moyenne + 4σ`. Sur 1 129 fenêtres réelles, cette
+règle donnait 0,89 % de déclenchements sur trois fenêtres consécutives — soit un
+faux positif toutes les ~2 minutes de trafic dense, inacceptable pour une démo
+de 3 minutes. Mesure comparative :
+
+| Estimateur | Seuil | FPR | FPR sur 3 fenêtres |
+|---|---|---|---|
+| moyenne + 4σ | 2,97 | 1,42 % | **0,89 %** |
+| 99,5ᵉ percentile | 3,44 | 0,53 % | 0,18 % |
+| moyenne + 6σ | 4,24 | 0,27 % | 0,09 % |
+| **99,9ᵉ percentile** | **4,61** | **0,27 %** | **0,09 %** |
+
+Le seuil reste **appris** (aucune constante dans le code), mais l'estimateur est
+plus conservateur — ce qui est cohérent avec le principe §5.3 : le coût d'un
+faux déclenchement (25 points) est sans commune mesure avec celui d'une
+détection 2 s plus tardive. Et la marge est intacte : le score le plus bas d'une
+attaque mesurée est ~11, soit 2,4× le seuil.
+
 Validation par le **vrai chemin de production** (`validate_real.py`, trafic
 légitime et attaque envoyés via `payment-api`, pas d'injection directe) :
 
 ```
-normal_mean 0.93   normal_max 1.35
-attack_mean 11.12  attack_min 10.99
+normal_mean  0.80  normal_max  1.24
+attack_mean 14.62  attack_min 14.29
 false_positive_rate 0.0   attack_detection_rate 1.0
 false_trigger_rate  0.0
 ```
 
-Aucun chevauchement : le score le plus haut du trafic normal (1,35) est 8 fois
-sous le seuil (4,91), le score le plus bas de l'attaque (10,99) est 2,2 fois
-au-dessus.
+Aucun chevauchement : le score le plus haut du trafic normal (1,24) est 3,7 fois
+sous le seuil (4,61), le score le plus bas de l'attaque (14,29) est 3,1 fois
+au-dessus. La marge est telle qu'un ajustement fin du seuil n'a aucun intérêt :
+c'est la séparation qui compte, pas le curseur.
+
+Note sur `attack_trigger_rate` (0,69) : le taux de *déclenchement* est plus bas
+que le taux de *détection* (1,0) parce que le script lit le score après chaque
+transaction, et l'anti-rebond exige 3 fenêtres consécutives. Une attaque qui
+dure — c'est le cas réel — déclenche ; une mesure ponctuelle n'a pas toujours
+le temps de voir la série.
 
 ### 3.3 Séparation des features (mesurée, pas supposée)
 
@@ -177,11 +249,11 @@ au-dessus.
 
 | Feature | Trafic normal | Attaque | AUC |
 |---|---|---|---|
-| `decoy_median_age_days` | 3,673 ± 0,156 | 18,916 ± 1,358 | **1,000** |
-| `ring_age_skewness` | 0,776 ± 0,220 | 0,399 ± 0,116 | 0,943 |
-| `ring_verify_cpu_us` | 0,000 ± 0,000 | idem | 0,500 |
-| `inter_arrival_median` | 0,366 ± 0,382 | idem | 0,500 |
-| `tx_latency_p95` | 10,43 ± 1,86 | idem | 0,500 |
+| `decoy_median_age_days` | 3,850 ± 0,167 | 25,731 ± 1,859 | **1,000** |
+| `ring_age_skewness` | 0,934 ± 0,191 | 1,456 ± 0,226 | 0,947 |
+| `ring_verify_cpu_us` | 2 502 ± 573 | idem | 0,500 |
+| `inter_arrival_median` | 0,356 ± 0,356 | idem | 0,500 |
+| `tx_latency_p95` | 46,10 ± 12,76 | idem | 0,500 |
 | `key_image_rejection_ratio` | 0 | 0 | 0,500 |
 
 Lecture honnête : **une seule feature discrimine l'attaque principale**, et
@@ -192,9 +264,11 @@ attaques différentes (rejeu de key image, anneau malformé, rafale automatisée
 et servent au modèle générique — c'est précisément pour cela qu'elles restent
 dans le vecteur : un modèle à une seule feature ne détecterait qu'une attaque.
 
-Note sur `ring_verify_cpu_us` à 0,000 : le noyau Rust **placeholder** répond en
-quelques microsecondes. Cette feature ne portera son signal (anneau malformé)
-que lorsque CLSAG sera branché — voir §6.2. On ne l'a pas maquillée.
+Note sur `ring_verify_cpu_us` : elle valait 0 µs tant que le noyau était un
+placeholder. Depuis bLSAG, elle mesure **2 502 ± 573 µs** pour un anneau de 11 —
+une vraie vérification cryptographique. Elle ne discrimine pas l'attaque
+principale (AUC 0,50) mais portera le signal « anneau malformé » : un anneau de
+taille anormale coûte un temps de vérification proportionnel à N.
 
 ---
 
@@ -318,27 +392,30 @@ estimateurs et celui qui a été retenu).
 
 ### 6.1 Ce qui est validé, et comment
 
-`docker compose up` complet (13 services), noyau Rust compilé, Ansible réel,
-**53 tests** verts, trois répétitions générales consécutives. Les stubs
-`local-dev/crypto_shim.py` et `tools/fake_ansible.py` ne sont plus nécessaires :
-ils restent dans le dépôt, marqués non livrables, pour un poste sans Docker.
+`docker compose up` complet (**14 services**), noyau Rust compilé avec bLSAG,
+Ansible réel, **79 tests** verts, trois répétitions générales consécutives,
+Prometheus et Grafana provisionnés. Les stubs `local-dev/crypto_shim.py` et
+`tools/fake_ansible.py` ne sont plus nécessaires : ils restent dans le dépôt,
+marqués non livrables, pour un poste sans Docker.
 
-### 6.2 `monero-crypto-core` est toujours un squelette pour la signature
+### 6.2 Cryptographie : bLSAG, pas CLSAG — et pas de Bulletproofs
 
-`ring-sign`, `ring-verify` et `audit-view` sont des placeholders. C'est la
-brique la plus lourde et la plus différenciante du projet. La chaîne P0
-fonctionne *malgré* cela, parce que l'anti-double-dépense et la télémétrie sont
-réels ; mais l'expertise technique (10 pts nationaux) dépend de cette brique.
+La signature d'anneau est **réelle et vérifiable** (§10.1), mais deux écarts
+subsistent par rapport à Monero de production :
 
-Ce qui a été corrigé côté Rust dans cette session : le service **panic** sur un
-hex trop court (`range end index 32 out of range`) — une requête malformée
-tuait le worker tokio. Les entrées invalides renvoient maintenant 400, et
-`/healthz` publie la liste `implemented` / `placeholder` pour que le TODO soit
-visible plutôt que dissimulé.
+- **bLSAG** au lieu de **CLSAG** : la signature est linéaire en N (~2× plus
+  grosse à N=11). Le modèle de sécurité est le même ; c'est une optimisation de
+  taille, pas une régression.
+- **Pas de preuves de domaine** : sans Bulletproofs, rien n'empêche un montant
+  négatif modulo l de satisfaire `∑C_in − ∑C_out = 0`. Cela suppose un
+  attaquant authentifié qui construit lui-même ses engagements — ce n'est pas
+  le scénario de la démo, mais c'est une vraie faiblesse, et elle est publiée
+  dans `/healthz` (`not_implemented`) plutôt que dissimulée.
 
 ### 6.3 Le modèle est calibré sur un seul poste
 
-1 089 fenêtres capturées ici. **À refaire sur le PC hôte de démonstration** :
+1 175 observations → 1 089 fenêtres capturées ici. **À refaire sur le PC hôte
+de démonstration** :
 
 ```bash
 cd services/ml-detector
@@ -347,67 +424,72 @@ cd services/ml-detector
 cd ../.. && docker compose build ml-detector && docker compose up -d ml-detector
 ```
 
-Un seuil calibré ailleurs peut produire des faux positifs. La capture varie
-désormais cadence **et** taille d'anneau : sans cela, le trafic post-remédiation
-(taille durcie à 25) sortait de la distribution normale (§9.4).
+Un seuil calibré ailleurs peut produire des faux positifs — c'est arrivé trois
+fois pendant le projet. La capture varie désormais cadence **et** taille
+d'anneau : sans cela, le trafic post-remédiation (taille durcie à 25) sortait de
+la distribution normale (§9.4).
 
-### 6.4 `auth-service` : dépendance à Vault non provisionnée en AppRole
+### 6.4 `auth-service` : AppRole Vault non provisionné
 
-La lecture Vault fonctionne (KV v2, cache 30 s, fallback explicite). Mais
-l'**AppRole** n'est pas provisionné : en démonstration, le playbook utilise
+La lecture Vault fonctionne (KV v2, cache 30 s, fallback explicite, 5 tests).
+Mais l'**AppRole** n'est pas provisionné : en démonstration, le playbook utilise
 `VAULT_TOKEN` (token de service) plutôt qu'un `role_id`/`secret_id` à portée
 restreinte. C'est un cran en dessous de ce que demanderait la production, et
 c'est écrit dans le playbook.
 
-### 6.5 Gouvernance et RAG : non commencés
+### 6.5 RAG : non commencé
 
-- Dossier EBIOS RM, PCA/PRA, NIS2/DORA : **rien de rédigé**. C'est 10 points
-  nationaux. Le tableau de reprise après panne de
-  `docs/hardware/CONCEPT-PHYSIQUE.md` §6 est un matériau de départ, pas un
-  dossier.
-- RAG Ollama : non commencé (pilier IA/DATA partiel).
-- WAF/SIEM : le honeypot `shadow-api` existe et est testé, mais le service
-  `waf` reste commenté dans `docker-compose.yml` : **rien ne redirige le trafic
-  vers le honeypot**. La déception active est donc codée, pas branchée.
-- `prometheus`, `grafana`, `loki`, `promtail` démarrent mais ne sont pas
-  configurés (aucun dashboard, aucun scrape config). L'observabilité est
-  présente comme socle, pas comme livrable.
+Le pilier IA/DATA est couvert par la détection ML, pas par l'assistant RAG
+(Ollama + LangChain). C'est le seul pilier partiellement traité.
 
 ### 6.6 Le modèle 3D n'a pas été imprimé
 
 C'est une v1 paramétrique ; les cotes du terminal doivent être mesurées avant
-impression.
+impression. Non bloquant : l'objet physique n'est jamais nécessaire.
+
+### 6.7 Le registre des outputs est en mémoire
+
+Perdu au redémarrage de `payment-api`. PostgreSQL est présent dans la stack
+mais n'est pas utilisé pour le registre. Conséquence assumée : un redémarrage
+en pleine démonstration remet les compteurs à zéro (et invalide la transaction
+de preuve en cours).
 
 ---
 
 ## 7. Plan pour la suite
 
-### Priorité 1 — noyau cryptographique (le vrai différenciateur)
+### Fait dans cette session
 
-`ring-sign` / `ring-verify` / `audit-view` : CLSAG + engagements de Pedersen +
-déchiffrement par View Key. C'est ce qui transforme un projet correct en projet
-mémorable, et ce qui tient l'axe « expertise technique ». Le contrat HTTP est
-déjà figé et testé : seuls les corps de fonction changent, `payment-api` n'a
-pas à bouger.
+| Chantier | État |
+|---|---|
+| Noyau cryptographique réel (bLSAG, Pedersen, View Key) | **fait** (§10.1) |
+| Déception active branchée (WAF → honeypot) | **fait** (§10.2) |
+| Observabilité Prometheus + Grafana | **fait** (§10.3) |
+| Dossier EBIOS RM / PCA-PRA / NIS2-DORA | **fait** (§10.4) |
+| Outils de démonstration (PC Attaquant, runbook) | **fait** (§10.5) |
 
-### Priorité 2 — brancher la déception active
+### Priorité 1 — Bulletproofs
 
-Décommenter `waf` dans `docker-compose.yml`, écrire `GET/POST /admin/redirect`,
-et faire de l'étape 1 du playbook une tâche sans `ignore_errors`. Le honeypot
-et son journal sont déjà testés (4 tests).
+Preuves de domaine sur les montants. C'est la seule faiblesse cryptographique
+restante, et la seule ligne de `/healthz` qui dit encore
+`not_implemented` sur un point de sécurité. 3 à 5 jours.
 
-### Priorité 3 — gouvernance
+### Priorité 2 — AppRole Vault
 
-EBIOS RM et PCA/PRA reliés à l'architecture réelle, pas des documents
-génériques. Le tableau de reprise après panne du §6 de
-`docs/hardware/CONCEPT-PHYSIQUE.md` est un modèle du genre attendu.
+Créer la politique `remediation-policy`, provisionner `role_id`/`secret_id`,
+retirer `VAULT_TOKEN` du compose. ½ journée.
 
-### Priorité 4 — observabilité et RAG
+### Priorité 3 — Registre persistant
 
-Scrape config Prometheus sur les `/healthz` et `/score`, dashboard Grafana
-« état du service », puis RAG Ollama sur le dossier technique.
+PostgreSQL est déjà dans la stack. Migrer `OUTPUTS` en table, rendre le RPO
+mesurable. 2 jours.
 
-### Priorité 5 — objet physique
+### Priorité 4 — RAG Ollama
+
+Assistant local sur le dossier technique (modèle ≤ 8 Md de paramètres, exigence
+du sujet). 2 jours.
+
+### Priorité 5 — Objet physique
 
 Câblage (alim 5 V séparée, GND commun, 330 Ω sur DIN, 1000 µF sur le 5 V),
 flash du firmware, `--replay` pour régler le cadrage. L'objet ne doit jamais
@@ -429,12 +511,19 @@ python tools/e2e_demo.py
 # Tous les tests (53)
 ./tools/run_tests.sh
 
+# PC Attaquant (4 familles d'attaques)
+python tools/attack.py list
+python tools/attack.py poison
+python tools/attack.py reset
+
 # Tests d'un service
 cd services/remediation-engine && ../../.venv/bin/python -m pytest test_state_bus.py -v
 cd services/ml-detector && ../../.venv/bin/python -m pytest test_detector.py -v
 cd services/payment-api && ../../.venv/bin/python -m pytest test_payment_api.py -v
 cd hardware/bridge && ../../.venv/bin/python -m pytest test_hardware_bridge.py -v
 cd services/monero-crypto-core && cargo test --release
+cd services/monero-crypto-core && ../../.venv/bin/python -m pytest test_crypto_flow.py -v
+cd services/waf && ../../.venv/bin/python -m pytest test_waf.py -v
 
 # Recalibrer le modèle sur le trafic local
 cd services/ml-detector
@@ -463,6 +552,8 @@ cd front-dashboard && npm run build
 | `REMEDIATION_FAILED` | `remediation-engine/history` → `ansible_rc` |
 | 409 en série sur `/tx/submit` | registre épuisé → redémarrer `payment-api` |
 | Dashboard vide | `curl localhost:8084/state`, puis vérifier « SSE KO » à l'écran |
+| Toutes les attaques déroutées | déception restée armée → `python tools/attack.py reset` |
+| Grafana refuse le mot de passe | volume d'un ancien démarrage → `docker compose down -v` |
 
 ---
 
@@ -552,3 +643,119 @@ socket Docker était monté (`/var/run/docker.sock`) : la tâche était donc à 
 `apt install docker.io` d'effacer le registre d'outputs en mémoire, c'est-à-dire
 la transaction de preuve que la démo doit montrer. Tâche supprimée, socket
 retiré. Un redémarrage destructif n'est pas une remédiation.
+
+---
+
+## 10. Complétion du MVP (session 3)
+
+Objectif : transformer un P0 démontrable en MVP couvrant réellement les cinq
+piliers. Quatre chantiers, tous vérifiables.
+
+### 10.1 Noyau cryptographique réel (pilier DEV, 10 pts nationaux)
+
+`monero-crypto-core` n'est plus un squelette. Ce qui est implémenté :
+
+| Primitive | Détail | Test |
+|---|---|---|
+| Adresse one-time | `P = H_s(rA)G + B`, `R = rG` | `adresse_one_time_et_derivation...` |
+| Clé dérivée porteur | `x = H_s(aR) + b`, vérifiée contre `P` | idem |
+| **Key image** | `I = x·H_p(P)` avec `H_p` = hash-**vers-le-groupe** (SHA-512 → `from_uniform_bytes`) | `key_image_deterministe...` |
+| Signature d'anneau | **bLSAG** complet : `c_i`, `s_i`, fermeture `s_π = α − c_π·x` | `signature_d_anneau_valide...` |
+| Engagements | `C = aG + rH`, `H` sans log discret connu | `pedersen_est_additif...` |
+| Équilibre | `∑C_in − ∑C_out = 0` | `commit_split_equilibre...` |
+| Montants | masque `Keccak("amount" ‖ shared)` | `chiffrement_du_montant...` |
+| Audit view-only | `GET /audit/last` déchiffre sans Spend Key | `test_crypto_flow.py` |
+
+**Le point qui compte en Q&A** : la key image utilise un vrai hash-vers-groupe.
+Si l'on avait défini `H_p(P) = h(P)·G` avec `h` connu (la tentation naturelle),
+n'importe qui pourrait forger une key image arbitraire — choisir `I = zG`, puis
+calculer `R_π = (u·h + c_π·z)G` — et l'anti-double-dépense deviendrait
+décoratif. C'est le genre d'erreur qui ne se voit pas à la lecture et qui
+détruit la crédibilité technique du projet.
+
+Deux écarts assumés, publiés dans `/healthz` (`not_implemented`) :
+bLSAG au lieu de CLSAG (signature ~2× plus grosse, même sécurité) et absence de
+Bulletproofs (un montant négatif modulo l passerait l'équilibre).
+
+Effet mesuré : `ring_verify_cpu_us` passe de 0 µs (placeholder) à **~1 200 µs**
+pour un anneau de 11. La feature ML correspondante devient enfin informative —
+elle ne l'était pas, et on ne l'avait pas maquillée.
+
+### 10.2 Déception active branchée (pilier CYBER)
+
+Le honeypot existait mais **personne ne lui redirigeait le trafic** : l'étape 1
+du playbook visait `http://waf:8081/admin/redirect`, un service inexistant.
+
+Ajout de `services/waf` (port 8085) : reverse proxy qui apprend l'âge des
+outputs en proxyfiant `/outputs`, et déroute vers `shadow-api` les transactions
+dont l'âge médian des leurres dépasse 8 j — **uniquement quand le playbook a
+armé la déception**.
+
+Le test qui compte : *le client légitime n'est jamais dérouté*, même déception
+armée. Une déception qui casse le paiement du client est pire que pas de
+déception.
+
+Effet mesuré : `e2e_demo.py` vérifie désormais `attacker_routed_to_honeypot`,
+et le playbook affiche `ignored=0` (plus aucune tâche masquée).
+
+### 10.3 Observabilité réelle (pilier INFRA)
+
+Prometheus et Grafana démarraient sans configuration : des conteneurs `Up` qui
+ne mesuraient rien. Trois ajouts :
+
+- **`/metrics`** sur les 7 services (format texte Prometheus), exposant les
+  invariants et non des compteurs HTTP : `shadow_model_ready`,
+  `shadow_webhook_error`, `shadow_runtime_threshold_ignored`,
+  `shadow_crypto_core_ready`, `shadow_waf_deception_active`, etc.
+- **11 règles d'alerte**, chacune reliée à une panne réellement rencontrée
+  (§9). On n'alerte pas « attaque en cours » : c'est le comportement attendu.
+  On alerte sur le silence.
+- **Dashboard Grafana provisionné** (10 panneaux, source de données incluse) :
+  modèle prêt, webhook, sonde, déception, score vs seuil, légitime vs dérouté.
+
+### 10.4 Gouvernance (pilier TRANSFORMATION, 10 pts nationaux)
+
+`docs/GOUVERNANCE.md` : EBIOS RM complet (5 ateliers), PCA/PRA avec RTO par
+service, correspondance NIS2 art. 21 et DORA art. 5-28, registre des risques
+résiduels, recommandations chiffrées.
+
+Le document est relié à l'architecture réelle : chaque mesure cite un fichier
+ou un endpoint. Les éléments non couverts sont marqués **NON COUVERT** (MFA,
+gestion des tiers, plan de formation) — un dossier qui prétend tout couvrir
+perd sa crédibilité au premier contrôle.
+
+### 10.5 Outils de démonstration
+
+| Outil | Rôle |
+|---|---|
+| `tools/attack.py` | PC Attaquant : 4 familles d'attaques, `--list`, `reset` |
+| `tools/e2e_demo.py` | Répétition complète, vérifie aussi la déception |
+| `docs/DEMO.md` | Runbook de soutenance : scénario seconde par seconde, rôles, Q&A, plan de secours |
+| Pavé PIN dans le dashboard | Surface d'attaque physique sans démonter le terminal |
+
+### 10.6 Résultat de la session 3
+
+```
+detection_seconds      3.0   3.1   3.4
+recovery_seconds       6.5   6.7   7.0
+proof_transaction_ok  true  true  true
+deception_active      true  true  true
+attacker_routed       true  true  true
+ansible_rc               0     0     0
+chain_complete        true  true  true
+```
+
+Trois exécutions consécutives, sans intervention. `tools/attack.py all` :
+12/12 leurres empoisonnés déroutés, rejeu bloqué en 409, 40 transactions en
+rafale à 9,7 tx/s, 3 entrées malformées refusées en 400 sans panic.
+
+### 10.7 Ce que le MVP ne couvre toujours pas
+
+| Élément | Impact | Traitement |
+|---|---|---|
+| Bulletproofs | Un montant négatif modulo l passe l'équilibre | Priorité 1 gouvernance |
+| AppRole Vault | Token de service au lieu d'un rôle à portée restreinte | Priorité 2 |
+| Registre en mémoire | Perte des outputs au redémarrage | Priorité 3 (PostgreSQL déjà là) |
+| RAG Ollama | Pilier IA/DATA partiel | Non commencé |
+| Objet physique | Non flashé, modèle 3D non imprimé | Non bloquant par conception |
+| Recalibrage ML | Le modèle est calibré sur ce poste, pas sur le PC de démo | 7 min, à faire la veille |

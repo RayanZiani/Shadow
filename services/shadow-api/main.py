@@ -8,7 +8,7 @@ import random
 import time
 from collections import deque
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("shadow-api")
@@ -54,6 +54,20 @@ async def fake_submit(request: Request):
 def list_interceptions():
     """Lu par le dashboard pour afficher le flux d'interception en direct."""
     return {"count": len(intercepted_log), "entries": list(intercepted_log)[-50:]}
+
+
+@app.get("/metrics")
+def metrics():
+    """Métriques Prometheus du honeypot."""
+    lines = [
+        "# HELP shadow_honeypot_interceptions_total Requêtes d'attaquant contenues",
+        "# TYPE shadow_honeypot_interceptions_total counter",
+        f"shadow_honeypot_interceptions_total {len(intercepted_log)}",
+        "# HELP shadow_honeypot_log_capacity Capacité du journal en mémoire",
+        "# TYPE shadow_honeypot_log_capacity gauge",
+        f"shadow_honeypot_log_capacity {MAX_LOG}",
+    ]
+    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.get("/healthz")

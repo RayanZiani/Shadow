@@ -88,8 +88,8 @@ def capture(
                 f"{PAYMENT}/tx/submit",
                 json={
                     "real_output_id": real,
-                    "amount": 1,
-                    "spend_private_key_hex": "00" * 32,
+                    # Le montant fait foi côté portefeuille (déchiffré par la
+                    # View Key) : le client ne l'annonce plus.
                     "decoy_ids": ring["decoys"],
                 },
             )

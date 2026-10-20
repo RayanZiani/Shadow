@@ -32,8 +32,7 @@ def _submit(client: httpx.Client, decoy_ids: list[str]) -> tuple[bool, float]:
         f"{PAYMENT}/tx/submit",
         json={
             "real_output_id": random.choice(pool)["id"],
-            "amount": 1,
-            "spend_private_key_hex": "00" * 32,
+            # Montant déchiffré côté portefeuille, pas annoncé par le client.
             "decoy_ids": decoy_ids,
         },
     )

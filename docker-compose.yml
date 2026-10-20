@@ -57,12 +57,24 @@ services:
     image: prom/prometheus:latest
     volumes:
       - prometheus-data:/prometheus
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+    ports: ["9090:9090"]
     networks: [shadow-net]
 
   grafana:
     image: grafana/grafana:latest
+    environment:
+      # Pas de mot de passe par défaut en clair dans le code : la valeur de
+      # démonstration est surchargeable par `.env`. Grafana exige un mot de
+      # passe non trivial au premier démarrage.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-shadow_local_dev}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./observability/grafana-provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana-dashboard.json:/etc/grafana/dashboards/resilience-alpha.json:ro
     ports: ["3001:3000"]
     networks: [shadow-net]
 
@@ -130,11 +142,18 @@ services:
     ports: ["8090:8090"]
     networks: [shadow-net]
 
-  # waf:
-  #   image: owasp/modsecurity-crs:nginx
-  #   ports: ["443:8443"]
-  #   networks: [shadow-net]
-  # -> à activer Jour 3, une fois payment-api et shadow-api stables.
+  # Point d'entrée « client » : reverse proxy + déception active. C'est lui
+  # que le playbook bascule vers le honeypot (étape 1), et c'est par lui que
+  # passe le trafic attaquant dans la démonstration.
+  waf:
+    build: ./services/waf
+    environment:
+      WAF_UPSTREAM: "http://payment-api:8080"
+      WAF_HONEYPOT: "http://shadow-api:8090"
+      DECOY_AGE_THRESHOLD: ${DECOY_AGE_THRESHOLD:-8.0}
+    depends_on: [payment-api, shadow-api]
+    ports: ["8085:8085"]
+    networks: [shadow-net]
 
   # ---------- PILIER IA / DATA ----------
   ml-detector:

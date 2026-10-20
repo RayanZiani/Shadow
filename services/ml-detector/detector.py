@@ -29,7 +29,7 @@ import joblib
 import numpy as np
 import torch
 import torch.nn as nn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -435,6 +435,42 @@ def threshold():
             if key in THRESHOLD
         },
     }
+
+
+@app.get("/metrics")
+def metrics():
+    """Métriques au format texte Prometheus.
+
+    Pourquoi un endpoint maison plutôt qu'un exportateur : les valeurs qui
+    comptent ici ne sont pas des compteurs HTTP, ce sont des INVARIANTS
+    (modèle prêt, webhook cassé, seuil périmé). Les exposer directement évite
+    d'ajouter une dépendance pour trois nombres.
+    """
+    ready = 1 if MODEL_STATE == "ready" else 0
+    lines = [
+        "# HELP shadow_model_ready 1 si le modèle et le seuil sont chargés",
+        "# TYPE shadow_model_ready gauge",
+        f"shadow_model_ready {ready}",
+        "# HELP shadow_threshold Seuil d'anomalie appris (ou mesuré au runtime)",
+        "# TYPE shadow_threshold gauge",
+        f"shadow_threshold {float((THRESHOLD or {}).get('threshold', 0) or 0)}",
+        "# HELP shadow_window_size Nombre d'événements dans la fenêtre glissante",
+        "# TYPE shadow_window_size gauge",
+        f"shadow_window_size {len(event_window)}",
+        "# HELP shadow_last_score Dernier score d'anomalie calculé",
+        "# TYPE shadow_last_score gauge",
+        f"shadow_last_score {float(latest.get('score') or 0)}",
+        "# HELP shadow_incident_active 1 si un incident est en cours de traitement",
+        "# TYPE shadow_incident_active gauge",
+        f"shadow_incident_active {1 if _incident_active else 0}",
+        "# HELP shadow_webhook_error 1 si le dernier webhook a échoué",
+        "# TYPE shadow_webhook_error gauge",
+        f"shadow_webhook_error {1 if _last_webhook_error else 0}",
+        "# HELP shadow_runtime_threshold_ignored 1 si un seuil runtime périmé a été refusé",
+        "# TYPE shadow_runtime_threshold_ignored gauge",
+        f"shadow_runtime_threshold_ignored {1 if RUNTIME_THRESHOLD_IGNORED else 0}",
+    ]
+    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.get("/healthz")

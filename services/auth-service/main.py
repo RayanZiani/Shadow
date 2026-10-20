@@ -20,7 +20,7 @@ import os
 import time
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from jose import jwt
 from pydantic import BaseModel
 
@@ -89,6 +89,25 @@ def login(req: LoginRequest):
     }
     token = jwt.encode(payload, key, algorithm=JWT_ALGO)
     return {"access_token": token, "token_type": "bearer"}
+
+
+@app.get("/metrics")
+def metrics():
+    """Métriques Prometheus : d'où vient la clé de signature."""
+    try:
+        _, source = _fetch_signing_key()
+        key_ok = True
+    except HTTPException:
+        source, key_ok = "unavailable", False
+    lines = [
+        "# HELP shadow_jwt_key_available 1 si la clé de signature est utilisable",
+        "# TYPE shadow_jwt_key_available gauge",
+        f"shadow_jwt_key_available {1 if key_ok else 0}",
+        "# HELP shadow_jwt_key_from_vault 1 si la clé vient de Vault (0 = fallback)",
+        "# TYPE shadow_jwt_key_from_vault gauge",
+        f"shadow_jwt_key_from_vault {1 if source == 'vault' else 0}",
+    ]
+    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.get("/healthz")

@@ -44,17 +44,19 @@
       # Pas de ignore_errors : si AppRole est configuré et échoue, la rotation
       # de clé ne doit pas être silencieusement sautée.
 
-    - name: Basculer le WAF/reverse-proxy vers le honeypot pour l'IP attaquante
+    - name: Basculer le WAF vers le honeypot (déception active)
       uri:
-        url: "http://waf:8081/admin/redirect"
+        url: "http://waf:8085/admin/redirect"
         method: POST
         body_format: json
         body:
           target: "shadow-api:8090"
           reason: "{{ diagnostic }}"
-      # TODO : le service WAF est encore commenté dans docker-compose.yml.
-      # Le honeypot existe et fonctionne, mais rien ne lui redirige le trafic.
-      ignore_errors: true
+        status_code: 200
+      register: deception
+      # Pas de ignore_errors : si le WAF ne répond pas, la déception n'a pas eu
+      # lieu et la remédiation doit échouer bruyamment. La version d'origine
+      # visait un port inexistant et « réussissait » sans rien faire.
 
     # ---------- Étape 2 : Purge + durcissement cryptographique ----------
     - name: Mettre en quarantaine les outputs empoisonnés (les plus anciens)
@@ -121,6 +123,7 @@
       debug:
         msg: >-
           Remédiation terminée pour diagnostic={{ diagnostic }},
+          déception={{ deception.json.deception | default(false) }},
           quarantaine={{ quarantine.json.count | default('?') }} outputs,
           ring_size={{ ring_size_result.json.ring_size | default('?') }},
           probe_ok={{ probe_check.json.ok | default(false) }}

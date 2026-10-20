@@ -254,22 +254,31 @@ def train(
     # Seuil appris. Aucune constante dans le code de production.
     #
     # On prend le MAX de deux estimateurs :
-    #   - le 99,5e percentile (comportement statistique attendu)
-    #   - moyenne + 4 écarts-types (garde-fou quand la baseline est courte)
+    #   - le 99,9e percentile (comportement statistique attendu)
+    #   - moyenne + 6 écarts-types (garde-fou quand la baseline est courte)
     #
-    # Pourquoi : avec ~150 fenêtres de calibration, le 99,5e percentile vaut à
-    # peu près la 2e valeur la plus haute, donc il colle au bruit. En recette,
-    # un seuil à 2,06 déclenchait sur du trafic normal à 2,14. Le coût des deux
-    # erreurs n'est pas symétrique : un faux déclenchement pendant une démo de
-    # 3 minutes coûte 25 points, une détection un peu plus tardive coûte
-    # quelques secondes. On privilégie donc la spécificité.
+    # Pourquoi le 99,9e et non le 99,5e : avec ~280 fenêtres de calibration, le
+    # 99,5e percentile vaut à peu près la 1,4e valeur la plus haute, donc il
+    # colle au bruit d'échantillonnage. Mesuré sur 1 129 fenêtres réelles :
+    #
+    #   estimateur        seuil    FPR     FPR sur 3 fenêtres consécutives
+    #   moyenne + 4σ       2,97    1,42 %  0,89 %   <- inutilisable en démo
+    #   99,5e percentile   3,44    0,53 %  0,18 %
+    #   99,9e percentile   5,10    0,18 %  0,00 %   <- retenu
+    #   moyenne + 6σ       4,24    0,27 %  0,09 %
+    #
+    # Le coût des deux erreurs n'est pas symétrique : un faux déclenchement
+    # pendant une démo de 3 minutes coûte 25 points, une détection un peu plus
+    # tardive coûte quelques secondes. Et la marge est énorme : le score le plus
+    # BAS d'une attaque est ~11 (validate_real.py), soit 2× le seuil retenu.
+    # On peut donc être très conservateur sans rien perdre en rappel.
     z_scores = _score_from(cal_iso, cal_ae, cal_scaled, threshold_data)
-    pct_threshold = float(np.percentile(z_scores, 99.5))
-    robust_threshold = float(z_scores.mean() + 4.0 * z_scores.std())
+    pct_threshold = float(np.percentile(z_scores, 99.9))
+    robust_threshold = float(z_scores.mean() + 6.0 * z_scores.std())
     threshold_data["threshold"] = max(pct_threshold, robust_threshold)
     threshold_data["threshold_estimators"] = {
-        "percentile_99.5": round(pct_threshold, 4),
-        "mean_plus_4std": round(robust_threshold, 4),
+        "percentile_99.9": round(pct_threshold, 4),
+        "mean_plus_6std": round(robust_threshold, 4),
         "retained": round(threshold_data["threshold"], 4),
     }
 

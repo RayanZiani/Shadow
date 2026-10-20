@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import PinPad from "./PinPad.jsx";
+
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
 const REMEDIATION_BASE = import.meta.env.VITE_REMEDIATION_BASE || "http://localhost:8084";
 const ML_BASE = import.meta.env.VITE_ML_BASE || "http://localhost:8083";
@@ -85,6 +87,10 @@ export default function App() {
   const [probeStatus, setProbeStatus] = useState(null);
   const [systemState, setSystemState] = useState({ seq: 0, state: "IDLE", detail: {} });
   const [ml, setMl] = useState(null);
+  // Audit view-only : montant déchiffré avec la SEULE View Key (DORA art. 19).
+  const [audit, setAudit] = useState(null);
+  // Compteurs PIN (surface d'attaque physique, alimente le ML).
+  const [pinStats, setPinStats] = useState(null);
   const [connected, setConnected] = useState(false);
   const lastSeq = useRef(-1);
 
@@ -137,6 +143,37 @@ export default function App() {
     };
     poll();
     const id = setInterval(poll, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // 4. Auditabilité : le portefeuille expose le montant de la dernière
+  //    transaction déchiffré sans jamais utiliser la Spend Key.
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/audit/last`);
+        setAudit(await res.json());
+      } catch {
+        setAudit(null);
+      }
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  // 5. Statistiques du pavé : le taux de refus est une feature du détecteur.
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/pin/stats`);
+        setPinStats(await res.json());
+      } catch {
+        setPinStats(null);
+      }
+    };
+    poll();
+    const id = setInterval(poll, 2000);
     return () => clearInterval(id);
   }, []);
 
@@ -224,6 +261,21 @@ export default function App() {
           </p>
         </Card>
 
+        <Card title="Terminal — saisie du code">
+          <PinPad apiBase={API_BASE} />
+          {pinStats && (
+            <p className="mt-2 text-center text-ink/60 text-[11px]">
+              {pinStats.failures}/{pinStats.attempts} refus sur {pinStats.window_seconds} s
+              {pinStats.failures > 0 && (
+                <span className="text-crimson font-bold">
+                  {" "}
+                  · taux {(pinStats.failure_ratio * 100).toFixed(0)} %
+                </span>
+              )}
+            </p>
+          )}
+        </Card>
+
         <Card title="Console de remédiation & conformité DORA">
           <p className="text-ink text-sm">
             {systemState.state === "REMEDIATING"
@@ -235,6 +287,29 @@ export default function App() {
           {detail.ansible_rc !== undefined && (
             <p className="text-ink/60 text-xs font-mono mt-1">ansible rc={detail.ansible_rc}</p>
           )}
+          <div className="mt-3 pt-3 border-t border-rule">
+            <p className="text-ink/70 text-xs font-bold uppercase tracking-wide">
+              Audit view-only (DORA art. 19)
+            </p>
+            {audit?.available ? (
+              <>
+                <p className="text-ink text-lg font-bold tabular-nums">
+                  montant {audit.amount}
+                </p>
+                <p className="text-ink/60 text-[11px] font-mono break-all">
+                  {audit.output_id} · anneau {audit.ring_size} · key image{" "}
+                  {String(audit.key_image).slice(0, 12)}…
+                </p>
+                <p className="text-ink/50 text-[11px] mt-1">
+                  déchiffré sans la Spend Key : aucune capacité de signature
+                </p>
+              </>
+            ) : (
+              <p className="text-ink/50 text-xs">
+                {audit?.reason ?? "en attente d'une transaction confirmée"}
+              </p>
+            )}
+          </div>
         </Card>
       </div>
     </div>

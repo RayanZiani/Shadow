@@ -10,6 +10,7 @@ export default {
         card: "#A1A6D4",
         emerald: "#10B981",
         crimson: "#DC143C",
+        rule: "#8A8FC0",
       },
     },
   },

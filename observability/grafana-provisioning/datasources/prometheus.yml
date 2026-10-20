@@ -1,0 +1,14 @@
+# Provisionnement automatique de la source de données.
+# Sans ce fichier, Grafana démarre avec zéro source et le dashboard importé
+# affiche « datasource not found » — constaté en recette.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 10s

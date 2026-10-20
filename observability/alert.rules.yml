@@ -1,0 +1,144 @@
+# Règles d'alerte — RESILIENCE-ALPHA
+#
+# Principe de rédaction : chaque alerte correspond à une panne RÉELLEMENT
+# rencontrée pendant le projet (voir docs/COMPTE-RENDU.md §9). Une alerte qui
+# ne s'est jamais déclenchée n'a pas sa place ici.
+#
+# Ce que l'on n'alerte PAS : « une attaque est en cours ». C'est le travail du
+# détecteur, et une attaque détectée est le comportement ATTENDU du système.
+# On alerte sur ce qui casse la démonstration : le silence.
+
+groups:
+  - name: chaine-p0
+    rules:
+      # Le détecteur ne peut pas conclure : artefacts absents ou corrompus.
+      # Cause vécue : image construite sans les .joblib/.pt (le Dockerfile ne
+      # testait que threshold.json).
+      - alert: ModeleMLIndisponible
+        expr: shadow_model_ready == 0
+        for: 1m
+        labels: { severity: critical, pilier: "IA/DATA" }
+        annotations:
+          summary: "ml-detector est en mode dégradé"
+          description: >-
+            Le modèle ou le seuil n'est pas chargé : aucune remédiation ne sera
+            déclenchée. `docker compose build ml-detector` puis vérifier
+            `curl localhost:8083/healthz`.
+
+      # Le webhook de remédiation est cassé : le détecteur voit l'attaque mais
+      # ne peut prévenir personne. C'est LA panne silencieuse du projet.
+      - alert: WebhookRemediationCasse
+        expr: shadow_webhook_error == 1
+        for: 1m
+        labels: { severity: critical, pilier: "IA/DATA" }
+        annotations:
+          summary: "le webhook de remédiation a échoué"
+          description: >-
+            `last_webhook_error` est non nul dans /healthz. Aucun incident
+            n'arrivera au moteur : la démo échouera sans message.
+
+      # Un seuil de calibration périmé a été trouvé et refusé. Le détecteur
+      # fonctionne, mais avec le seuil appris, pas celui qui avait été mesuré.
+      - alert: SeuilRuntimePerime
+        expr: shadow_runtime_threshold_ignored == 1
+        for: 1m
+        labels: { severity: warning, pilier: "IA/DATA" }
+        annotations:
+          summary: "un threshold_runtime.json périmé a été refusé"
+          description: >-
+            Le fichier a été mesuré sur un autre modèle. Recapturer :
+            `capture_baseline.py` puis `calibrate_threshold.py`.
+
+      # Le moteur de remédiation est tombé : plus de source de vérité d'état,
+      # donc plus de dashboard ni de terminal cohérents.
+      - alert: MoteurRemediationIndisponible
+        expr: up{job="remediation-engine"} == 0
+        for: 30s
+        labels: { severity: critical, pilier: INFRA }
+        annotations:
+          summary: "remediation-engine est arrêté"
+          description: >-
+            L'état du système n'est plus publié. Le dashboard affichera
+            « SSE KO ». `docker compose up -d remediation-engine`.
+
+      # Un playbook qui échoue : la remédiation n'a pas eu lieu.
+      - alert: RemediationEnEchec
+        expr: increase(shadow_playbook_failures_total[10m]) > 0
+        for: 1m
+        labels: { severity: critical, pilier: INFRA }
+        annotations:
+          summary: "un playbook de remédiation a échoué"
+          description: >-
+            Voir `remediation-engine/history` → `ansible_rc`. Un playbook en
+            échec pendant la démo donne REMEDIATION_FAILED au dashboard.
+
+      # Le noyau cryptographique ne répond plus : plus de signature d'anneau,
+      # donc plus aucun paiement possible.
+      - alert: NoyauCryptoIndisponible
+        expr: shadow_crypto_core_ready == 0
+        for: 30s
+        labels: { severity: critical, pilier: DEV }
+        annotations:
+          summary: "payment-api n'a plus de noyau cryptographique"
+          description: >-
+            Chaque transaction renverra 503 (`crypto_last_error` dans
+            /healthz). `docker compose up -d monero-crypto-core`.
+
+      # La sonde de transaction légitime échoue : c'est le signal le plus
+      # fiable que le paiement est cassé (et la fenêtre ML ne se remplit plus).
+      - alert: SondeTransactionEnEchec
+        expr: shadow_probe_ok == 0
+        for: 1m
+        labels: { severity: critical, pilier: DEV }
+        annotations:
+          summary: "la transaction de preuve échoue"
+          description: >-
+            `GET /tx/auto-probe/status` renvoie ok=false. C'est aussi ce que
+            l'étape 4 du playbook vérifie : la remédiation conclura à un échec.
+
+      # Le WAF est le point d'entrée : s'il tombe, l'attaquant n'est plus
+      # contenu et le scénario de déception ne peut plus être montré.
+      - alert: WafIndisponible
+        expr: up{job="waf"} == 0
+        for: 30s
+        labels: { severity: warning, pilier: CYBER }
+        annotations:
+          summary: "waf est arrêté"
+          description: >-
+            Le trafic direct sur payment-api reste possible, mais la déception
+            active n'est plus démontrable. `docker compose up -d waf`.
+
+      # La déception n'est pas armée alors qu'un incident a eu lieu : le
+      # playbook n'a pas fait son travail.
+      - alert: DeceptionNonArmee
+        expr: shadow_incidents_total > 0 and shadow_waf_deception_active == 0
+        for: 2m
+        labels: { severity: warning, pilier: CYBER }
+        annotations:
+          summary: "la déception n'est pas armée après un incident"
+          description: >-
+            Vérifier l'étape 1 du playbook (`/admin/redirect` sur le WAF) et
+            `GET localhost:8085/admin/state`.
+
+  - name: integrite
+    rules:
+      # Un service qui redémarre en boucle : c'est ainsi qu'un panic du noyau
+      # Rust se manifestait (hex trop court). Le conteneur « Up » mentait.
+      - alert: RedemarragesRepetes
+        expr: changes(process_start_time_seconds[15m]) > 2
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} redémarre en boucle"
+          description: >-
+            Vérifier `docker compose logs --tail=50 {{ $labels.job }}`.
+            Un redémarrage répété pendant la démo coûte la démonstration.
+
+      # Un service injoignable tout court.
+      - alert: ServiceInjoignable
+        expr: up == 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} ne répond pas au scrape"
+          description: "`docker compose ps {{ $labels.job }}`"

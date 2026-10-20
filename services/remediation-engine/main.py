@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 ANSIBLE_PLAYBOOK = os.environ.get("ANSIBLE_PLAYBOOK", "/ansible/remediation_playbook.yml")
@@ -321,6 +321,34 @@ async def events():
 @app.get("/history")
 def history():
     return {"count": len(remediation_log), "entries": remediation_log[-20:]}
+
+
+@app.get("/metrics")
+def metrics():
+    """Métriques Prometheus : état courant, incidents, échecs de playbook."""
+    last = remediation_log[-1] if remediation_log else {}
+    failures = sum(1 for entry in remediation_log if entry.get("ansible_rc") != 0)
+    lines = [
+        "# HELP shadow_state_seq Numéro de séquence du dernier état publié",
+        "# TYPE shadow_state_seq counter",
+        f"shadow_state_seq {bus.current['seq']}",
+        "# HELP shadow_remediation_in_progress 1 si un playbook tourne",
+        "# TYPE shadow_remediation_in_progress gauge",
+        f"shadow_remediation_in_progress {1 if _lock.locked() else 0}",
+        "# HELP shadow_incidents_total Nombre d'incidents traités depuis le démarrage",
+        "# TYPE shadow_incidents_total counter",
+        f"shadow_incidents_total {len(remediation_log)}",
+        "# HELP shadow_playbook_failures_total Nombre de playbooks en échec",
+        "# TYPE shadow_playbook_failures_total counter",
+        f"shadow_playbook_failures_total {failures}",
+        "# HELP shadow_last_remediation_seconds Durée du dernier playbook",
+        "# TYPE shadow_last_remediation_seconds gauge",
+        f"shadow_last_remediation_seconds {float(last.get('duration_seconds') or 0)}",
+        "# HELP shadow_sse_subscribers Nombre d'abonnés SSE (dashboard + terminal)",
+        "# TYPE shadow_sse_subscribers gauge",
+        f"shadow_sse_subscribers {len(bus._subscribers)}",
+    ]
+    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.get("/healthz")

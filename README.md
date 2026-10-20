@@ -3,70 +3,64 @@
 Système de paiement fictif à confidentialité cryptographique, avec détection
 d'anomalies par machine learning et remédiation autonome. Workshop M2 2026.
 
+**MVP complet** : les cinq piliers sont branchés les uns aux autres et la
+chaîne tourne de bout en bout sous Docker, sans intervention humaine.
+
 ## Ce qui est réellement opérationnel
 
 | Brique | État | Preuve |
 |---|---|---|
-| `payment-api` | Fonctionnel : registre d'outputs, leurres gamma, anti-double-dépense, PIN, sonde | `tools/e2e_demo.py` |
-| `ml-detector` | Modèle entraîné sur capture réelle, seuil appris, anti-rebond, diagnostic | `threshold.json` (métriques), 11 tests |
-| `remediation-engine` | Bus d'états SSE, remédiation asynchrone, verrou, Ansible réel dans l'image | 7 + 5 tests |
-| `front-dashboard` | 4 quadrants, anneau SVG miroir du terminal, SSE | `npm run build` |
+| `monero-crypto-core` | **bLSAG réel**, key image anti-double-dépense, engagements de Pedersen, audit view-only | 8 tests Rust + 10 tests HTTP |
+| `payment-api` | Registre d'outputs chiffrés, leurres gamma, anti-double-dépense, PIN, sonde | `tools/e2e_demo.py`, 10 tests |
+| `ml-detector` | Modèle entraîné sur capture réelle, seuil appris, anti-rebond, diagnostic | `threshold.json`, 11 tests |
+| `remediation-engine` | Bus d'états SSE, remédiation asynchrone, verrou, Ansible réel dans l'image | 12 tests |
+| `waf` | Reverse proxy + **déception active** branchée sur le honeypot | 10 tests |
+| `shadow-api` | Honeypot borné, journal d'interception consultable | 4 tests |
+| `auth-service` | Clé JWT lue dans **Vault** (KV v2), fallback explicite sinon | 5 tests |
+| `front-dashboard` | 4 quadrants, anneau SVG, pavé PIN, score ML, audit view-only | `npm run build` |
 | `hardware/bridge` | Pont SSE → USB, reconnexion, mode répétition | 9 tests + `--dry-run` |
 | `hardware/ring_signer_hsm` | Firmware ESP32, 5 états, parseur de trame | à flasher |
-| `monero-crypto-core` | **Squelette** : stealth-address réel, CLSAG à brancher | 4 tests Rust |
-| `auth-service` | Clé JWT lue dans **Vault** (KV v2), fallback explicite sinon | 5 tests |
-| `shadow-api` | Honeypot fonctionnel, **non alimenté** (WAF non branché) | 4 tests |
+| Observabilité | Prometheus (9 métriques/services, 11 alertes) + Grafana provisionné | `localhost:3001` |
 
-**Chaîne P0 mesurée sur Docker** : attaque → détection → remédiation → transaction
-de preuve en **6,2 à 6,3 s** (limite 90 s, marge ≈ 84 s), 3 exécutions
-consécutives. 13 conteneurs `Up`, Ansible réel, noyau Rust compilé.
+**Chaîne P0 mesurée sur Docker** : attaque → détection → remédiation →
+transaction de preuve → déception active en **6,5 à 7,0 s** (limite 90 s,
+marge ≈ 83 s), sur trois exécutions consécutives.
 
 ## Démarrage
 
 Guide complet (Docker, Rust, Python, Node, Vault, dépannage) :
 [`docs/INSTALLATION-LOCAL.md`](docs/INSTALLATION-LOCAL.md).
+Runbook de la soutenance : [`docs/DEMO.md`](docs/DEMO.md).
 
 ```bash
 cp .env.example .env
-docker compose build      # ~6-8 min la première fois
+docker compose build      # ~6-8 min la première fois (torch, cargo)
 docker compose up -d
-docker compose ps         # tout doit être Up / healthy
+docker compose ps         # 14 services, tous Up / healthy
 ```
 
-Le modèle ML est entraîné **à la construction de l'image** (jamais en live).
-Pour un modèle calibré sur le trafic réel — la seule version défendable devant
-un jury :
+| Accès | URL |
+|---|---|
+| Dashboard | http://localhost:5173 |
+| Grafana (admin / admin au 1er démarrage) | http://localhost:3001 |
+| Prometheus | http://localhost:9090 |
+| API de paiement | http://localhost:8080 |
+| WAF (point d'entrée attaquant) | http://localhost:8085 |
 
-```bash
-cd services/ml-detector
-python capture_baseline.py --seconds 300     # trafic normal, ~5 min
-python train.py --from-capture baseline.jsonl
-docker compose build ml-detector
-```
-
-## Répétition générale
+## La chaîne, en une commande
 
 ```bash
 python tools/e2e_demo.py
 ```
 
-Lance une vraie attaque (leurres empoisonnés), attend la détection et la
-remédiation, vérifie qu'une transaction passe ensuite, et chronomètre.
-Code de sortie 0 = chaîne complète. À lancer avant chaque soutenance.
-Le script attend que la fenêtre du détecteur soit vide avant de mesurer :
-deux exécutions consécutives donnent donc le même résultat.
-
-## Tests
+Lance une vraie attaque **via le WAF**, attend la détection et la remédiation,
+vérifie qu'une transaction client passe ensuite, et que l'attaquant est
+**dérouté vers le honeypot**. Code de sortie 0 = chaîne complète.
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
-./tools/run_tests.sh
+python tools/attack.py poison     # PC Attaquant : les 4 familles d'attaques
+python tools/attack.py list
 ```
-
-53 tests : bus d'états et flux d'incident (12), détecteur ML (11), API de
-paiement (8), pont hardware (9), noyau Rust (4), honeypot (4), auth-service (5).
 
 ## Le pipeline ML, en une page
 
@@ -94,46 +88,76 @@ Quatre erreurs de conception ont été trouvées en recette, et corrigées :
 | Sonde de liveness dans la télémétrie | Cadence fixe de 4 s, distribution biaisée | Champ `synthetic`, exclu du calcul |
 | Entropie comme feature principale | AUC 0,56 : elle sature à 10 leurres par transaction | Remplacée par l'**âge médian des leurres** (AUC 1,00) |
 
-Sans ces corrections, le détecteur produisait 70 à 100 % de faux
-déclenchements sur du trafic normal. Après : **0 % sur 3 fenêtres consécutives**
-et 81 % de rappel sur les 4 familles d'attaques.
-
-`analyze_separation.py` mesure l'AUC de chaque feature et documente lesquelles
-portent réellement le signal :
+`analyze_separation.py` mesure l'AUC de chaque feature sur 1 140 fenêtres :
 
 | Feature | AUC (leurres empoisonnés) |
 |---|---|
 | `decoy_median_age_days` | **1,00** (séparation parfaite) |
-| `ring_age_skewness` | 0,92 (complémentaire) |
-| `decoy_entropy` (abandonnée) | 0,56 |
-| les 3 autres | 0,50 (bruit pour cette attaque) |
+| `ring_age_skewness` | 0,94 (complémentaire) |
+| les 4 autres | 0,50 (bruit pour cette attaque, utiles aux autres) |
 
 Justification physique : un wallet Monero tire ses leurres selon une gamma
-biaisée vers les outputs récents — **3,56 j ± 0,67** mesuré sur ce système. Un
+biaisée vers les outputs récents — **3,67 j ± 0,16** mesuré sur ce système. Un
 attaquant qui empoisonne les leurres les tire uniformément dans le registre —
-**31,1 j ± 12,7**. Aucun chevauchement. C'est un résultat honnête à assumer en
+**18,9 j ± 1,4**. Aucun chevauchement. C'est un résultat honnête à assumer en
 Q&A : une seule feature discrimine l'attaque principale, et elle est
 physiquement justifiée.
 
+## La cryptographie, en une page
+
+`monero-crypto-core` implémente un modèle Monero **simplifié mais réel** sur
+Ristretto255 :
+
+| Primitive | Implémentation |
+|---|---|
+| Adresse one-time | `P = H_s(rA)G + B`, `R = rG` (ECDH) |
+| Clé dérivée par le porteur | `x = H_s(aR) + b` |
+| Key image (anti-double-dépense) | `I = x·H_p(P)`, hash-**vers-le-groupe** (Elligator) : personne ne connaît le log discret, donc pas de forge |
+| Signature d'anneau liée | **bLSAG** sur `n` clés, message lié aux engagements |
+| Engagements | `C = aG + rH`, homomorphes, aveugles sommant à zéro |
+| Confidentialité du montant | masque `Keccak("amount" ‖ shared)` appliqué au montant |
+| Audit **view-only** | `GET /audit/last` : lit le montant **sans** la Spend Key |
+
+Deux écarts assumés, publiés dans `/healthz` (`not_implemented`) et dans le
+dossier de gouvernance :
+
+- **CLSAG** au lieu de bLSAG → signature ~2× plus grosse, même modèle de
+  sécurité ;
+- **pas de Bulletproofs** → un montant négatif modulo l pourrait passer la
+  vérification d'équilibre.
+
+## Tests
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+./tools/run_tests.sh
+```
+
+**79 tests** : bus d'états et flux d'incident (12), détecteur ML (11), API de
+paiement (10), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
+(9), honeypot (4), auth-service (5).
+
 ## Ce qui reste à faire
 
-- **`monero-crypto-core`** : `ring-sign` / `ring-verify` / `audit-view` sont des
-  placeholders. C'est la brique la plus lourde et la plus différenciante
-  (CLSAG + engagements de Pedersen + View Key séparée). Priorité absolue.
-  `stealth-address` est réel, et les entrées invalides renvoient 400 au lieu de
-  tuer le worker (corrigé : un hex trop court provoquait un panic).
-- **WAF / SIEM** : le honeypot `shadow-api` existe et est testé, mais aucun
-  service ne lui redirige le trafic (service `waf` encore commenté).
+- **Bulletproofs** (preuves de domaine) : seule vraie faille cryptographique
+  restante. Priorité 1 du dossier de gouvernance.
+- **AppRole Vault** : le playbook utilise aujourd'hui un token de service.
+- **Registre persistant** : les outputs sont en mémoire (perdus au redémarrage).
 - **RAG Ollama** : non commencé (pilier IA/DATA partiel).
-- **Dossier EBIOS RM / PCA-PRA / NIS2-DORA** : non commencé. C'est 10 points
-  nationaux, et le tableau de reprise après panne de
-  `docs/hardware/CONCEPT-PHYSIQUE.md` §6 est déjà un modèle du genre attendu.
-- **Modèle 3D** : v1 paramétrique non imprimée ; mesurer le terminal avant.
+- **Objet physique** : firmware à flasher, modèle 3D v1 jamais imprimé.
+- **Recalibrage ML** sur le PC hôte de démonstration (7 min, obligatoire).
+
+Détail complet, avec chiffres et justifications :
+[`docs/COMPTE-RENDU.md`](docs/COMPTE-RENDU.md) et
+[`docs/GOUVERNANCE.md`](docs/GOUVERNANCE.md).
 
 ## Priorités
 
-- **P0** — chaîne attaque → ML → Ansible → preuve : **fait et mesuré**.
-- **P1** — honeypot, WAF/SIEM, dashboard, dossier EBIOS/PCA-PRA/DORA.
+- **P0** — chaîne attaque → ML → Ansible → preuve → déception : **fait et mesuré**.
+- **P1** — honeypot, WAF, observabilité, dashboard, dossier EBIOS/PCA-PRA/DORA :
+  **fait**.
 - **P2** — hardware, RAG Ollama. L'objet physique ne doit **jamais** être
   nécessaire à la démo.
 
@@ -151,4 +175,5 @@ zipper :
 
 ```bash
 git secrets --scan
+grep -rn "hvs\.\|BEGIN.*PRIVATE KEY" --include="*.py" --include="*.yml" --include="*.md" .
 ```

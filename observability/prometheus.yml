@@ -1,0 +1,57 @@
+# Configuration Prometheus — RESILIENCE-ALPHA
+#
+# On scrape les endpoints `/metrics` des services (format texte Prometheus,
+# exposé par chaque service, sans exportateur externe). Les métriques ne sont
+# pas des compteurs HTTP : ce sont les INVARIANTS qui cassent la démonstration
+# (modèle prêt, webhook cassé, seuil périmé, déception armée).
+#
+# Alertes : `alert.rules.yml`.
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - /etc/prometheus/alert.rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # --- Chaîne P0 ---------------------------------------------------------
+  - job_name: ml-detector
+    static_configs:
+      - targets: ["ml-detector:8083"]
+        labels: { service: ml-detector, pilier: "IA/DATA" }
+
+  - job_name: remediation-engine
+    static_configs:
+      - targets: ["remediation-engine:8084"]
+        labels: { service: remediation-engine, pilier: INFRA }
+
+  - job_name: payment-api
+    static_configs:
+      - targets: ["payment-api:8080"]
+        labels: { service: payment-api, pilier: DEV }
+
+  - job_name: monero-crypto-core
+    static_configs:
+      - targets: ["monero-crypto-core:8081"]
+        labels: { service: monero-crypto-core, pilier: DEV }
+
+  # --- Cyber -------------------------------------------------------------
+  - job_name: waf
+    static_configs:
+      - targets: ["waf:8085"]
+        labels: { service: waf, pilier: CYBER }
+
+  - job_name: shadow-api
+    static_configs:
+      - targets: ["shadow-api:8090"]
+        labels: { service: shadow-api, pilier: CYBER }
+
+  - job_name: auth-service
+    static_configs:
+      - targets: ["auth-service:8082"]
+        labels: { service: auth-service, pilier: CYBER }

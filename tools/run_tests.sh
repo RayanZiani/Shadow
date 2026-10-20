@@ -42,15 +42,22 @@ run "shadow-api (honeypot)" \
   bash -c "cd '$ROOT/services/shadow-api' && '$PY' -m pytest test_shadow_api.py -q"
 run "auth-service (gestion de la clé JWT)" \
   bash -c "cd '$ROOT/services/auth-service' && '$PY' -m pytest test_auth_service.py -q"
+run "waf (déception active)" \
+  bash -c "cd '$ROOT/services/waf' && '$PY' -m pytest test_waf.py -q"
 run "hardware (contrat série)" \
   bash -c "cd '$ROOT/hardware/bridge' && '$PY' -m pytest test_hardware_bridge.py -q"
 
 if command -v cargo >/dev/null 2>&1; then
-  run "monero-crypto-core (Rust)" \
+  run "monero-crypto-core (Rust, unitaires)" \
     bash -c "cd '$ROOT/services/monero-crypto-core' && cargo test --release -q"
 else
   echo "cargo absent : tests Rust ignorés (installez rustup)"
 fi
+
+# Tests d'intégration qui parlent aux services réels. Ils se déclarent ignorés
+# si la pile n'est pas démarrée : `docker compose up -d`.
+run "monero-crypto-core (bLSAG + audit, HTTP)" \
+  bash -c "cd '$ROOT/services/monero-crypto-core' && '$PY' -m pytest test_crypto_flow.py -q"
 
 if [[ "${1:-}" != "--fast" ]]; then
   run "ml-detector (artefacts présents)" \
