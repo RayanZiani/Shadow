@@ -12,7 +12,7 @@ import io
 import pathlib
 import sys
 
-SUFFIXES = (".md", ".py", ".jsx", ".js", ".yml", ".rs", ".cpp", ".h", ".txt")
+SUFFIXES = (".md", ".py", ".jsx", ".js", ".yml", ".rs", ".cpp", ".h", ".txt", ".sh", ".yml", ".toml")
 SKIP = ("node_modules", ".venv", "dist", "target", ".pio", "__pycache__", ".git")
 MARKERS = ("Ã©", "Ã¨", "Ã ", "Ã§", "Ãª", "Ã®", "Ã´", "Ã»", "â€”", "â€™", "â‚¬", "Ã‰", "Ã€")
 

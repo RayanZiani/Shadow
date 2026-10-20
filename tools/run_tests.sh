@@ -46,6 +46,8 @@ run "ml-detector (features & anti-rebond)" \
   bash -c "cd '$ROOT/services/ml-detector' && '$PY' -m pytest test_detector.py -q"
 run "payment-api (modèle de menace)" \
   bash -c "cd '$ROOT/services/payment-api' && '$PY' -m pytest test_payment_api.py -q"
+run "payment-api (registre persistant)" \
+  bash -c "cd '$ROOT/services/payment-api' && '$PY' -m pytest test_registry.py -q"
 run "shadow-api (honeypot)" \
   bash -c "cd '$ROOT/services/shadow-api' && '$PY' -m pytest test_shadow_api.py -q"
 run "auth-service (gestion de la clé JWT)" \

@@ -19,7 +19,7 @@ import io
 import pathlib
 import sys
 
-SUFFIXES = (".md", ".py", ".jsx", ".js", ".yml", ".rs", ".cpp", ".h", ".txt", ".json")
+SUFFIXES = (".md", ".py", ".jsx", ".js", ".yml", ".rs", ".cpp", ".h", ".txt", ".json", ".sh", ".toml")
 SKIP = ("node_modules", ".venv", "dist", "target", ".pio", "__pycache__", ".git")
 
 # Marqueurs de mojibake : des séquences qu'on ne rencontre pas en français
