@@ -6,7 +6,8 @@ fonctionner. Aucun n'est appelé par les services en production.
 | Script | Rôle |
 |---|---|
 | `e2e_demo.py` | Répétition générale : attaque → détection → remédiation → preuve, chronométrée |
-| `fake_ansible.py` | Stub de `ansible-playbook` pour rejouer la chaîne sans Ansible installé |
+| `run_tests.sh` | Lance les 53 tests du dépôt (Python + Rust), avec récapitulatif |
+| `fake_ansible.py` | Stub de `ansible-playbook` — **inutile depuis que l'image contient Ansible** |
 
 ## Répétition générale
 
@@ -18,9 +19,9 @@ Sortie attendue :
 
 ```json
 {
-  "detection_seconds": 10.1,
-  "recovery_seconds": 12.6,
-  "total_seconds": 35.9,
+  "detection_seconds": 2.3,
+  "recovery_seconds": 6.3,
+  "total_seconds": 16.0,
   "limit_seconds": 90.0,
   "proof_transaction_ok": true,
   "ansible_rc": 0,
@@ -37,9 +38,14 @@ Le script échoue explicitement (code 1) si :
 - la fenêtre glissante ne se remplit pas (le test ne prouverait rien) ;
 - la chaîne dépasse 90 s.
 
+Il attend aussi que la fenêtre du détecteur soit **vide** avant de mesurer
+(`window_size == 0`) : deux exécutions consécutives donnent donc le même
+résultat, au lieu de voir le reste de l'attaque précédente.
+
 ## Rejouer sans Ansible
 
-Utile sur un poste où seul Docker n'est pas encore disponible :
+Utile sur un poste où Docker n'est pas disponible (Ansible est désormais dans
+l'image `remediation-engine`, ce stub n'est plus nécessaire) :
 
 ```bash
 # service remediation-engine lancé avec :

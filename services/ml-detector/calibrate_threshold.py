@@ -73,14 +73,22 @@ def main() -> int:
 
     array = np.array(scores)
     learned = 0.0
+    model_trained_at = None
     with httpx.Client(timeout=5.0) as client:
-        learned = client.get(f"{DETECTOR}/threshold").json().get("threshold") or 0.0
+        learned_info = client.get(f"{DETECTOR}/threshold").json()
+        learned = learned_info.get("threshold") or 0.0
+        model_trained_at = learned_info.get("trained_at")
 
     runtime_threshold = float(np.percentile(array, args.percentile))
     payload = {
         "threshold": round(runtime_threshold, 4),
         "source": f"runtime_observation_p{args.percentile}",
         "n_measures": int(len(array)),
+        # Empreinte du modèle sur lequel la mesure a été faite. detector.py
+        # REFUSE ce fichier si elle ne correspond pas au modèle chargé : un
+        # seuil mesuré sur un ancien modèle désactive silencieusement la
+        # détection (constaté : 13,66 contre 4,91 appris).
+        "model_trained_at": model_trained_at,
         "mean": round(float(array.mean()), 4),
         "std": round(float(array.std()), 4),
         "p50": round(float(np.percentile(array, 50)), 4),

@@ -122,7 +122,7 @@ def _load_artifacts():
     needed = ("scaler.joblib", "isolation_forest.joblib", "autoencoder.pt", "threshold.json")
     missing = [name for name in needed if not os.path.exists(os.path.join(ARTIFACT_DIR, name))]
     if missing:
-        return None, None, None, None, missing
+        return None, None, None, None, missing, None
 
     scaler = joblib.load(os.path.join(ARTIFACT_DIR, "scaler.joblib"))
     iso = joblib.load(os.path.join(ARTIFACT_DIR, "isolation_forest.joblib"))
@@ -134,12 +134,26 @@ def _load_artifacts():
 
     # Seuil d'exploitation : si calibrate_threshold.py a mesuré la distribution
     # réelle, on l'utilise — mais uniquement s'il est PLUS PRUDENT que le seuil
-    # appris. Un seuil plus bas que l'appris ferait entrer du trafic normal.
+    # appris, ET s'il a été mesuré avec CE modèle.
+    #
+    # Le contrôle de pérennité n'est pas cosmétique : un threshold_runtime.json
+    # oublié d'un entraînement précédent embarque un seuil qui ne correspond plus
+    # au modèle chargé. Constaté en recette sur l'image Docker : seuil runtime
+    # 13,66 contre 4,91 appris, l'attaque culminait à 11,2 et AUCUNE détection
+    # ne se produisait — sans erreur, sans log. On refuse donc le fichier et on
+    # expose la raison dans /healthz.
     runtime_path = os.path.join(ARTIFACT_DIR, "threshold_runtime.json")
+    runtime_ignored = None
     if os.path.exists(runtime_path):
         with open(runtime_path, encoding="utf-8") as handle:
             runtime = json.load(handle)
-        if runtime.get("threshold", 0) > threshold.get("threshold", 0):
+        measured_for = runtime.get("model_trained_at")
+        if measured_for != threshold.get("trained_at"):
+            runtime_ignored = (
+                f"mesuré pour le modèle {measured_for or 'inconnu'}, "
+                f"modèle chargé {threshold.get('trained_at')}"
+            )
+        elif runtime.get("threshold", 0) > threshold.get("threshold", 0):
             threshold["threshold_learned"] = threshold.get("threshold")
             threshold["threshold"] = runtime["threshold"]
             threshold["source"] = runtime.get("source", "runtime_observation")
@@ -148,11 +162,13 @@ def _load_artifacts():
                 key: runtime.get(key)
                 for key in ("p50", "p99", "p999", "max", "mean", "std")
             }
+        else:
+            runtime_ignored = "seuil mesuré plus bas que le seuil appris (non prudent)"
 
-    return scaler, iso, ae, threshold, []
+    return scaler, iso, ae, threshold, [], runtime_ignored
 
 
-scaler, iso_forest, autoencoder, THRESHOLD, MISSING = _load_artifacts()
+scaler, iso_forest, autoencoder, THRESHOLD, MISSING, RUNTIME_THRESHOLD_IGNORED = _load_artifacts()
 MODEL_STATE = "ready" if THRESHOLD else "degraded"
 
 
@@ -212,11 +228,36 @@ _anomaly_streak = 0
 _last_webhook_error: str | None = None
 
 
+def _purge_window(now: float) -> None:
+    """Retire de la fenêtre glissante les événements trop anciens."""
+    while event_window and now - event_window[0]["timestamp"] > WINDOW_SECONDS:
+        event_window.popleft()
+
+
+def _window_age() -> float | None:
+    """Âge du plus ancien événement de la fenêtre (None si vide).
+
+    Exposé dans /score et /healthz : c'est ce qui permet à la recette de savoir
+    quand la fenêtre est réellement propre avant de mesurer.
+    """
+    if not event_window:
+        return None
+    return round(time.time() - event_window[0]["timestamp"], 2)
+
+
 @app.post("/ingest")
 async def ingest(event: TelemetryEvent):
     global _last_trigger, _incident_active, _anomaly_streak
 
     now = time.time()
+
+    # Purge de la fenêtre AVANT toute sortie anticipée, y compris pour le
+    # trafic `synthetic`. Sinon la fenêtre ne se vide que lorsqu'un vrai client
+    # envoie une observation : après une attaque, les événements empoisonnés
+    # restaient jusqu'à 10 s et contaminaient la mesure suivante. Constaté en
+    # recette en enchaînant deux `e2e_demo.py` : le second run voyait une
+    # « anomalie avant l'attaque » qui n'était que le reste du premier.
+    _purge_window(now)
 
     # Trafic de la sonde de liveness : on l'ignore complètement. Voir la
     # définition de `synthetic` dans TelemetryEvent.
@@ -229,8 +270,7 @@ async def ingest(event: TelemetryEvent):
         }
 
     event_window.append(event.model_dump())
-    while event_window and now - event_window[0]["timestamp"] > WINDOW_SECONDS:
-        event_window.popleft()
+    _purge_window(now)
 
     features = extract_features(list(event_window))
 
@@ -376,7 +416,7 @@ def _diagnose(features: np.ndarray) -> str:
 @app.get("/score")
 def score():
     """Flux temps réel pour le dashboard (polling 1 s)."""
-    return latest
+    return {**latest, "window_oldest_age_s": _window_age(), "window_size": len(event_window)}
 
 
 @app.get("/threshold")
@@ -404,10 +444,15 @@ def healthz():
         "model": MODEL_STATE,
         "missing": MISSING,
         "window_size": len(event_window),
+        "window_oldest_age_s": _window_age(),
         "min_events": MIN_EVENTS,
         "incident_active": _incident_active,
         "anomaly_streak": _anomaly_streak,
         "streak_required": ANOMALY_STREAK_REQUIRED,
         "webhook": REMEDIATION_WEBHOOK,
         "last_webhook_error": _last_webhook_error,
+        # Non nul = un threshold_runtime.json a été trouvé mais refusé (mesuré
+        # pour un autre modèle). À voir avant de conclure à un modèle calme.
+        "runtime_threshold_ignored": RUNTIME_THRESHOLD_IGNORED,
+        "threshold_source": (THRESHOLD or {}).get("source"),
     }

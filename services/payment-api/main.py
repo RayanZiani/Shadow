@@ -50,7 +50,39 @@ OUTPUTS: list[dict] = [
 ]
 OUTPUT_AGE = {o["id"]: o["age_days"] for o in OUTPUTS}
 spent_key_images: set[str] = set()
+# Outputs réellement dépensés. On suit l'IDENTIFIANT en plus de la key image :
+# la key image est produite par le noyau cryptographique et sa dérivation peut
+# changer (placeholder -> CLSAG réel). Filtrer `/outputs?unspent=true` sur une
+# dérivation recopiée ici donnait un pool faux dès que le noyau Rust réel était
+# utilisé (la dérivation locale ne correspondait plus) : le client retombait en
+# boucle sur des outputs déjà dépensés et recevait des 409 en série. Constaté en
+# recette sur `docker compose` — invisible avec le shim, qui recopiait la même
+# formule.
+spent_output_ids: set[str] = set()
 auto_probe_status = {"last_run": None, "ok": True}
+
+# Le registre doit pouvoir alimenter plusieurs répétitions de la démo : chaque
+# transaction consomme un output réel. Avec 500 outputs et ~1 tx/s, le pool était
+# épuisé après deux passages de `e2e_demo.py` — les clients recevaient alors des
+# 409 en série, ce qui ressemble à une attaque permanente. On réalimente donc le
+# registre, comme les nouveaux blocs d'une blockchain, avec la MÊME loi d'âge :
+# la distribution vue par le ML ne change pas.
+_registry_seq = len(OUTPUTS)
+
+
+def _replenish_pool(min_unspent: int = 250, batch: int = 200) -> None:
+    global _registry_seq
+    unspent = sum(1 for o in OUTPUTS if o["id"] not in spent_output_ids and not o.get("internal"))
+    while unspent < min_unspent:
+        for _ in range(batch):
+            _registry_seq += 1
+            output = {
+                "id": f"output_{_registry_seq}",
+                "age_days": round(random.lognormvariate(3.2, 1.1), 3),
+            }
+            OUTPUTS.append(output)
+            OUTPUT_AGE[output["id"]] = output["age_days"]
+        unspent += batch
 
 # --- Compteurs d'observations ----------------------------------------------
 pin_attempts: deque[float] = deque(maxlen=500)
@@ -91,7 +123,8 @@ def list_outputs(limit: int = 500, unspent: bool = False):
     """
     outputs = OUTPUTS
     if unspent:
-        outputs = [o for o in OUTPUTS if _key_image_of(o["id"]) not in spent_key_images]
+        _replenish_pool()
+        outputs = [o for o in OUTPUTS if o["id"] not in spent_output_ids]
     # Les outputs internes (sonde) ne sont pas des leurres candidats : les
     # exposer laisserait un attaquant reconstruire un anneau entièrement
     # composé de nos propres sondes.
@@ -100,8 +133,11 @@ def list_outputs(limit: int = 500, unspent: bool = False):
 
 
 def _key_image_of(output_id: str) -> str:
-    """Même dérivation que monero-crypto-core, pour pouvoir filtrer les
-    outputs déjà dépensés sans appeler le noyau Rust."""
+    """Dérivation de la key image — DOIT rester identique à celle du noyau.
+
+    Utilisée uniquement pour les tests et le diagnostic. Le filtrage
+    `unspent` ne s'appuie plus dessus (voir `spent_output_ids`).
+    """
     import hashlib
 
     return hashlib.sha256(f"ki::{output_id}".encode()).hexdigest()
@@ -122,7 +158,7 @@ def _gamma_weights(ages: list[float], shape: float = 2.0, scale: float = 1.6) ->
 
 
 @app.get("/decoys")
-def get_decoys(count: int = RING_SIZE - 1):
+def get_decoys(count: int | None = None):
     """Tire les leurres selon une gamma sur l'âge (biais récents, comme Monero).
 
     Les outputs INTERNES (sonde de liveness) sont exclus : ils ont un âge
@@ -131,6 +167,8 @@ def get_decoys(count: int = RING_SIZE - 1):
     en recette : l'entropie et l'asymétrie dérivaient au fil du temps, et le
     modèle entraîné une heure plus tôt ne correspondait plus au trafic.
     """
+    if count is None:
+        count = RING_SIZE - 1
     candidates = [o for o in OUTPUTS if not o.get("internal")]
     count = max(0, min(count, len(candidates) - 1))
     if count == 0:
@@ -225,6 +263,7 @@ async def submit_tx(req: TxSubmitRequest):
             raise HTTPException(status_code=400, detail="anneau invalide")
 
         spent_key_images.add(sign["key_image_hex"])
+        spent_output_ids.add(req.real_output_id)
 
     latency_ms = (time.perf_counter() - started) * 1000
     ages = [OUTPUT_AGE[i] for i in decoy_ids]
@@ -351,6 +390,27 @@ def pin_stats():
 
 
 # ------------------------------------------------------------ sonde & admin
+class RingSizeRequest(BaseModel):
+    ring_size: int
+
+
+@app.post("/admin/ring-size")
+def set_ring_size(req: RingSizeRequest):
+    """Durcissement demandé par remediation_playbook.yml (étape 2).
+
+    Effet RÉEL : la taille d'anneau par défaut utilisée quand le client ne
+    fournit pas de leurres (`/decoys`, `/tx/submit`). Avant, le playbook
+    appelait `/admin/ring-size` sur le noyau Rust : cet endpoint n'existait pas,
+    la tâche échouait sous `ignore_errors`, et le durcissement n'avait aucun
+    effet observable — le playbook « réussissait » sans rien durcir.
+    """
+    global RING_SIZE
+    if not 2 <= req.ring_size <= 64:
+        raise HTTPException(status_code=400, detail="ring_size hors bornes (2..64)")
+    previous, RING_SIZE = RING_SIZE, req.ring_size
+    return {"status": "hardened", "ring_size": RING_SIZE, "previous": previous}
+
+
 async def _auto_probe_loop():
     """Bot de transaction légitime : preuve continue avant/pendant/après.
 
@@ -368,6 +428,17 @@ async def _auto_probe_loop():
         probe_id = f"probe_{int(time.time())}_{counter}"
         OUTPUTS.append({"id": probe_id, "age_days": 0.01, "internal": True})
         OUTPUT_AGE[probe_id] = 0.01
+        # Les sondes sont à usage unique. On retire les précédentes une fois
+        # dépensées : sans ce ménage, le registre gagnait 900 entrées par heure
+        # et la sérialisation de /outputs devenait inutilement lourde après une
+        # journée de répétitions.
+        OUTPUTS[:] = [
+            o for o in OUTPUTS if not o.get("internal") or o["id"] not in spent_output_ids
+        ]
+        live_ids = {o["id"] for o in OUTPUTS}
+        for output_id in [i for i in OUTPUT_AGE if i.startswith("probe_")]:
+            if output_id not in live_ids:
+                OUTPUT_AGE.pop(output_id, None)
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
@@ -395,17 +466,25 @@ def probe_status():
 def quarantine_outputs():
     """Appelé par remediation_playbook.yml (étape 2).
 
-    Retire les outputs suspects du pool de leurres. Sans cet endpoint, le
-    playbook « réussit » sans rien faire : c'est exactement le genre de
-    théâtre qu'un jury repère en Q&A.
+    Retire du pool de leurres les outputs que le ML a désignés comme suspects :
+    les plus ANCIENS. C'est le signal exactement mesuré par le détecteur
+    (`decoy_median_age_days`) — un attaquant qui empoisonne l'anneau pioche
+    uniformément dans le registre, donc majoritairement dans la traîne ancienne.
+
+    Pourquoi pas un tirage aléatoire (version d'origine) : il ne corrigeait rien
+    (les outputs empoisonnés restaient en place) tout en vidant le registre à
+    chaque incident. Après une vingtaine de répétitions de la démo, `/decoys`
+    ne pouvait plus fournir 10 leurres. Constaté en recette.
     """
-    quarantined = random.sample([o["id"] for o in OUTPUTS], k=min(25, len(OUTPUTS)))
-    OUTPUTS[:] = [o for o in OUTPUTS if o["id"] not in set(quarantined)]
+    suspects = sorted(OUTPUTS, key=lambda o: o["age_days"], reverse=True)[:25]
+    quarantined = {o["id"] for o in suspects}
+    OUTPUTS[:] = [o for o in OUTPUTS if o["id"] not in quarantined]
     OUTPUT_AGE.clear()
     OUTPUT_AGE.update({o["id"]: o["age_days"] for o in OUTPUTS})
     return {
         "status": "quarantined",
         "count": len(quarantined),
+        "criterion": "oldest_outputs",
         "remaining_outputs": len(OUTPUTS),
     }
 

@@ -1,5 +1,10 @@
 # Lancement local sans Docker (recette)
 
+> **Mode de secours.** La chaîne est désormais validée sous Docker (13 services,
+> Ansible réel, noyau Rust compilé) — voir `docs/INSTALLATION-LOCAL.md`. Ce
+> dossier ne sert qu'à un poste où Docker n'est pas installable : il remplace le
+> noyau Rust par une cryptographie **factice** et Ansible par un stub.
+
 Ce dossier permet de faire tourner toute la chaîne sur un poste Windows sans
 Docker, pour répéter la démonstration. **Ce n'est pas le mode de livraison** :
 la livraison, c'est `docker compose up`.
@@ -63,6 +68,8 @@ proof_transaction_ok   true
 ansible_rc             0
 chain_complete         true
 ```
+
+(Sur Docker, avec Ansible réel : 6,2 à 6,3 s de reprise.)
 
 Si tes chiffres sont très différents, vérifie dans cet ordre :
 

@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+# baseline.jsonl est VOLONTAIREMENT inclus : s'il est présent, l'image est
+# entraînée sur la capture réelle (voir Dockerfile). Les artefacts binaires,
+# eux, sont copiés tels quels quand ils existent déjà.
+#
+# threshold_runtime.json est EXCLU. C'est un seuil mesuré sur UN poste à UN
+# moment ; le figer dans l'image revient à figer une mesure périmée. Constaté :
+# une image construite avec un threshold_runtime.json mesuré sur un ancien
+# modèle embarquait un seuil de 13,66 alors que le modèle appris disait 4,91 —
+# la détection ne déclenchait plus du tout, sans aucune erreur. Pour l'utiliser,
+# le copier explicitement APRÈS construction :
+#     docker compose cp services/ml-detector/threshold_runtime.json ml-detector:/app/
+threshold_runtime.json
+node_modules/
+dist/
+target/

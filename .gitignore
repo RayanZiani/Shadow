@@ -33,6 +33,9 @@ node_modules/
 dist/
 .vite/
 
+# --- Rust ---
+services/monero-crypto-core/target/
+
 # --- Modèles et artefacts 3D ---
 *.stl
 *.gcode

@@ -5,6 +5,12 @@
 # Privilèges : ce playbook utilise un token Vault à portée restreinte
 # (politique dédiée "remediation-policy", pas le root token) — c'est ce que
 # la grille appelle "accès du moteur de remédiation maîtrisés" (Axe 2).
+#
+# Principe de rédaction : chaque tâche doit avoir un EFFET VÉRIFIABLE. Une
+# tâche qui échoue sous `ignore_errors` alors que son endpoint n'existe pas
+# fait « réussir » le playbook sans rien corriger ; c'est du théâtre, et un
+# jury le repère en Q&A. Les tâches encore non branchées sont donc explicitement
+# marquées TODO et listées dans le dossier technique.
 
 - name: Remédiation autonome SHADOW-SETTLE
   hosts: localhost
@@ -15,6 +21,13 @@
     diagnostic: "{{ diagnostic | default('unknown') }}"
     vault_addr: "http://vault:8200"
     ring_size_hardened: 25
+    # Deux modes d'authentification Vault, dans cet ordre :
+    #   1. AppRole (production) : role_id/secret_id à portée restreinte ;
+    #   2. VAULT_TOKEN (poste de démonstration) : token de service.
+    # Aucun des deux n'est le root token en production.
+    vault_role_id: "{{ lookup('env', 'VAULT_ROLE_ID') }}"
+    vault_secret_id: "{{ lookup('env', 'VAULT_SECRET_ID') }}"
+    vault_token_env: "{{ lookup('env', 'VAULT_TOKEN') }}"
 
   tasks:
     # ---------- Étape 1 : Active Deception ----------
@@ -24,12 +37,12 @@
         method: POST
         body_format: json
         body:
-          role_id: "{{ lookup('env', 'VAULT_ROLE_ID') }}"
-          secret_id: "{{ lookup('env', 'VAULT_SECRET_ID') }}"
+          role_id: "{{ vault_role_id }}"
+          secret_id: "{{ vault_secret_id }}"
       register: vault_login
-      # TODO (vous) : en squelette on tolère l'échec pour ne pas bloquer le
-      # dev local sans Vault configuré — retirez ignore_errors en prod.
-      ignore_errors: true
+      when: vault_role_id | length > 0
+      # Pas de ignore_errors : si AppRole est configuré et échoue, la rotation
+      # de clé ne doit pas être silencieusement sautée.
 
     - name: Basculer le WAF/reverse-proxy vers le honeypot pour l'IP attaquante
       uri:
@@ -39,49 +52,75 @@
         body:
           target: "shadow-api:8090"
           reason: "{{ diagnostic }}"
-      ignore_errors: true # le WAF n'est branché qu'à partir du Jour 3
+      # TODO : le service WAF est encore commenté dans docker-compose.yml.
+      # Le honeypot existe et fonctionne, mais rien ne lui redirige le trafic.
+      ignore_errors: true
 
     # ---------- Étape 2 : Purge + durcissement cryptographique ----------
-    - name: Mettre en quarantaine les outputs empoisonnés
+    - name: Mettre en quarantaine les outputs empoisonnés (les plus anciens)
       uri:
         url: "http://payment-api:8080/admin/quarantine-outputs"
         method: POST
-      ignore_errors: true # endpoint à créer dans payment-api, cf. TODO service
+      register: quarantine
+      # Pas de ignore_errors : si la quarantaine échoue, la remédiation n'a
+      # rien corrigé et le playbook doit le dire (rc != 0 -> REMEDIATION_FAILED).
 
     - name: Durcir dynamiquement la taille des anneaux (N -> {{ ring_size_hardened }})
       uri:
-        url: "http://monero-crypto-core:8081/admin/ring-size"
+        url: "http://payment-api:8080/admin/ring-size"
         method: POST
         body_format: json
         body:
           ring_size: "{{ ring_size_hardened }}"
-      ignore_errors: true # endpoint admin à ajouter au service Rust
+      register: ring_size_result
+      # Endpoint réel sur payment-api (c'est lui qui choisit la taille d'anneau
+      # quand le client ne fournit pas de leurres). L'ancienne version appelait
+      # monero-crypto-core, qui ne décide pas de la taille d'anneau.
 
-    # ---------- Étape 3 : Rotation Vault + relance propre ----------
+    # ---------- Étape 3 : Rotation Vault ----------
     - name: Faire tourner le secret de signature JWT
       uri:
         url: "{{ vault_addr }}/v1/secret/data/jwt"
         method: POST
         headers:
-          X-Vault-Token: "{{ vault_login.json.auth.client_token | default('') }}"
+          X-Vault-Token: >-
+            {{ vault_login.json.auth.client_token
+               if (vault_login.json is defined and vault_login.json.auth is defined)
+               else vault_token_env }}
         body_format: json
         body:
           data:
             signing_key: "{{ lookup('pipe', 'openssl rand -hex 32') }}"
-      ignore_errors: true
+      when: >-
+        (vault_login.json is defined and vault_login.json.auth is defined)
+        or vault_token_env | length > 0
+      # Effet VÉRIFIABLE : auth-service relit la clé à l'expiration de son cache
+      # (30 s) et /healthz passe alors à `jwt_key_source: vault`. Sans aucun
+      # token, la tâche est sautée — et le dit (`skipped`), elle ne prétend pas
+      # avoir tourné.
 
-    - name: Relancer le worker payment-api sans coupure
-      command: docker compose up -d --force-recreate payment-api
-      ignore_errors: true
+    # NOTE — la tâche « Relancer le worker payment-api » a été RETIRÉE.
+    # Elle faisait `docker compose up -d --force-recreate payment-api` depuis le
+    # conteneur de remédiation : sans client Docker dans l'image, elle échouait
+    # silencieusement (ignore_errors), et avec le client Docker elle aurait
+    # détruit le registre d'outputs en mémoire — donc la transaction de preuve
+    # que la démo doit montrer. Un redémarrage destructif pendant l'incident
+    # n'est pas une remédiation, c'est une remise à zéro.
 
     # ---------- Étape 4 : Transaction de preuve post-incident ----------
     - name: Vérifier qu'une nouvelle transaction légitime passe
       uri:
         url: "http://payment-api:8080/tx/auto-probe/status"
         method: GET
+        status_code: 200
       register: probe_check
-      ignore_errors: true
+      # Pas de ignore_errors : c'est LA preuve de reprise. Son échec doit
+      # produire REMEDIATION_FAILED, pas un succès de façade.
 
     - name: Rapporter le statut final
       debug:
-        msg: "Remédiation terminée pour diagnostic={{ diagnostic }}, probe_ok={{ probe_check.json.ok | default('inconnu') }}"
+        msg: >-
+          Remédiation terminée pour diagnostic={{ diagnostic }},
+          quarantaine={{ quarantine.json.count | default('?') }} outputs,
+          ring_size={{ ring_size_result.json.ring_size | default('?') }},
+          probe_ok={{ probe_check.json.ok | default(false) }}

@@ -64,6 +64,23 @@ def check_services(client: httpx.Client) -> dict:
     return services
 
 
+def wait_clean_window(client: httpx.Client, timeout: float = 20.0) -> None:
+    """Attend que la fenêtre du détecteur soit vide.
+
+    Indispensable pour que deux répétitions s'enchaînent : sinon les
+    observations de l'attaque précédente (fenêtre de 10 s) sont encore présentes
+    et le script conclut à une « anomalie avant l'attaque ». La sonde de
+    liveness de payment-api purge la fenêtre toutes les 4 s, même sans client.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        state = client.get(f"{DETECTOR}/score").json()
+        if not state.get("window_size"):
+            return
+        time.sleep(0.5)
+    log("ATTENTION : la fenêtre ne se vide pas (sonde de liveness arrêtée ?)")
+
+
 def baseline(client: httpx.Client, samples: int = 12) -> None:
     """Trafic légitime AVANT l'attaque.
 
@@ -74,6 +91,7 @@ def baseline(client: httpx.Client, samples: int = 12) -> None:
     remplie : sinon le détecteur reste en mode « warming » et ne produit aucun
     score, ce qui rend la vérification « pas d'anomalie au repos » sans valeur.
     """
+    wait_clean_window(client)
     log(f"trafic normal de référence ({samples} tx)…")
     for _ in range(samples):
         decoys = client.get(f"{PAYMENT}/decoys", params={"count": 10}).json()["decoys"]
@@ -94,8 +112,8 @@ def baseline(client: httpx.Client, samples: int = 12) -> None:
 
     # On laisse la fenêtre se vider : sinon les observations normales diluent
     # l'attaque et la détection est artificiellement retardée.
-    log("purge de la fenêtre glissante (6 s)…")
-    time.sleep(6)
+    log("purge de la fenêtre glissante…")
+    wait_clean_window(client)
 
 
 def submit(client: httpx.Client, decoy_ids: list[str]) -> bool:

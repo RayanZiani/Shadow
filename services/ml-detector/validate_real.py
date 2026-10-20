@@ -46,6 +46,21 @@ def _submit(client: httpx.Client, decoy_ids: list[str]) -> tuple[bool, float]:
     return True, float(response.json().get("latency_ms", 0))
 
 
+def _scored(state: dict, min_events: int) -> bool:
+    """Le détecteur a-t-il RÉELLEMENT produit un score ?
+
+    Tant que la fenêtre contient moins de MIN_EVENTS événements, le détecteur
+    est en mode `warming` et renvoie 0,0 : ce n'est pas une mesure de trafic
+    normal, c'est une absence de mesure. Les compter comme « score 0 » gonflait
+    artificiellement les taux de non-détection (mesuré : `attack_min` à 0,0 et
+    45 % de déclenchement au lieu de 100 %).
+    """
+    return (
+        state.get("model") == "ready"
+        and state.get("window_size", 0) >= min_events
+    )
+
+
 def run(n: int = 20) -> dict:
     rng = random.Random(7)
     normal_scores: list[float] = []
@@ -59,12 +74,19 @@ def run(n: int = 20) -> dict:
         threshold = client.get(f"{DETECTOR}/threshold").json().get("threshold") or 0.0
         health = client.get(f"{DETECTOR}/healthz").json()
         streak_required = health.get("streak_required", 3)
+        min_events = health.get("min_events", 8)
+        skipped_normal = 0
+        skipped_attack = 0
 
         for _ in range(n):
             decoys = client.get(f"{PAYMENT}/decoys", params={"count": 10}).json()["decoys"]
             ok, _ = _submit(client, decoys)
             if ok:
                 state = client.get(f"{DETECTOR}/score").json()
+                if not _scored(state, min_events):
+                    skipped_normal += 1
+                    time.sleep(rng.uniform(0.2, 0.8))
+                    continue
                 normal_scores.append(float(state["score"]))
                 # Ce qui compte réellement : un déclenchement de remédiation.
                 if state.get("streak", 0) >= streak_required:
@@ -83,6 +105,10 @@ def run(n: int = 20) -> dict:
             ok, _ = _submit(client, poison)
             if ok:
                 state = client.get(f"{DETECTOR}/score").json()
+                if not _scored(state, min_events):
+                    skipped_attack += 1
+                    time.sleep(rng.uniform(0.2, 0.8))
+                    continue
                 attack_scores.append(float(state["score"]))
                 if state.get("streak", 0) >= streak_required:
                     attack_triggers += 1
@@ -108,6 +134,8 @@ def run(n: int = 20) -> dict:
         "streak_required": streak_required,
         "n_normal": len(normal_scores),
         "n_attack": len(attack_scores),
+        "skipped_warming_normal": skipped_normal,
+        "skipped_warming_attack": skipped_attack,
     }
 
 

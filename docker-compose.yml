@@ -1,8 +1,15 @@
-version: "3.9"
-
-# RESILIENCE-ALPHA / SHADOW-SETTLE — squelette docker-compose
-# Lancez par brique : `docker compose up db-postgres vault` d'abord,
-# puis ajoutez les services au fur et à mesure qu'ils compilent.
+# RESILIENCE-ALPHA / SHADOW-SETTLE — orchestration complète.
+#
+#   cp .env.example .env
+#   docker compose build        # ~6-8 min la première fois (torch, cargo)
+#   docker compose up -d
+#
+# L'ordre n'est pas critique : les services tolèrent l'absence temporaire de
+# leurs voisins et se resynchronisent. Guide détaillé (Docker/Colima, Rust,
+# Python, Node, Vault, dépannage) : docs/INSTALLATION-LOCAL.md
+#
+# Le bloc `version:` a été retiré : Compose v2 le signale comme obsolète à
+# chaque commande.
 
 networks:
   shadow-net:
@@ -21,11 +28,20 @@ services:
     environment:
       POSTGRES_DB: shadow_settle
       POSTGRES_USER: shadow
-      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
-    secrets: [pg_password]
+      # Mot de passe unique pour le poste de démonstration, surchargeable par
+      # `.env`. L'ancienne version passait par un secret fichier : si le fichier
+      # `secrets/pg_password.txt` manquait, `docker compose up` échouait avant
+      # même de démarrer le premier conteneur, et DATABASE_URL contenait de son
+      # côté un mot de passe codé en dur qui ne correspondait pas au secret.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shadow_local_dev}
     volumes:
       - pg-data:/var/lib/postgresql/data
     networks: [shadow-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shadow -d shadow_settle"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   vault:
     image: hashicorp/vault:1.17
@@ -70,6 +86,11 @@ services:
     build: ./services/auth-service
     environment:
       VAULT_ADDR: "http://vault:8200"
+      # Vide par défaut : le service le signale dans /healthz
+      # (`jwt_key_source: fallback_env`) au lieu de faire croire que Vault est
+      # branché. Renseigner VAULT_TOKEN dans `.env` active la lecture réelle.
+      VAULT_TOKEN: ${VAULT_TOKEN:-}
+      JWT_SIGNING_KEY_CACHE: ${JWT_SIGNING_KEY_CACHE:-dev-only-placeholder-rotate-me}
     depends_on: [vault]
     ports: ["8082:8082"]
     networks: [shadow-net]
@@ -77,13 +98,22 @@ services:
   payment-api:
     build: ./services/payment-api
     environment:
-      DATABASE_URL: "postgresql://shadow:changeme@db-postgres:5432/shadow_settle"
+      DATABASE_URL: "postgresql://shadow:${POSTGRES_PASSWORD:-shadow_local_dev}@db-postgres:5432/shadow_settle"
       CRYPTO_CORE_URL: "http://monero-crypto-core:8081"
       ML_DETECTOR_URL: "http://ml-detector:8083"
       REMEDIATION_STATE_URL: "http://remediation-engine:8084/state/report"
-    depends_on: [db-postgres, monero-crypto-core]
+    depends_on:
+      db-postgres:
+        condition: service_healthy
+      monero-crypto-core:
+        condition: service_started
     ports: ["8080:8080"]
     networks: [shadow-net]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=2)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
   front-dashboard:
     build: ./front-dashboard
@@ -111,6 +141,7 @@ services:
     build: ./services/ml-detector
     environment:
       REMEDIATION_WEBHOOK: "http://remediation-engine:8084/incident"
+    depends_on: [remediation-engine]
     ports: ["8083:8083"]
     networks: [shadow-net]
 
@@ -124,12 +155,16 @@ services:
     build: ./services/remediation-engine
     environment:
       ANSIBLE_PLAYBOOK: "/ansible/remediation_playbook.yml"
+      # Token Vault transmis au playbook (rotation de la clé JWT). Vide =
+      # tâche sautée et signalée `skipped`, jamais un faux succès.
+      VAULT_TOKEN: ${VAULT_TOKEN:-}
     volumes:
       - ./ansible:/ansible
-      - /var/run/docker.sock:/var/run/docker.sock
+    # PAS de /var/run/docker.sock ici. Il était monté pour une tâche de
+    # redémarrage de payment-api qui n'a jamais fonctionné (client Docker absent
+    # de l'image) et qui, si elle avait fonctionné, aurait détruit le registre
+    # d'outputs en mémoire. Le socket Docker donne un accès équivalent root sur
+    # l'hôte : le garder contredisait l'indicateur « accès du moteur de
+    # remédiation maîtrisés ».
     ports: ["8084:8084"]
     networks: [shadow-net]
-
-secrets:
-  pg_password:
-    file: ./secrets/pg_password.txt   # jamais commité — voir .gitignore

@@ -14,8 +14,15 @@ COPY . .
 #     python capture_baseline.py --seconds 300
 #     python train.py --from-capture baseline.jsonl
 #     docker compose build ml-detector
-RUN if [ ! -f threshold.json ]; then \
-        echo "Aucun artefact : entraînement synthétique de repli" && \
+#
+# Le test porte sur les QUATRE artefacts, pas seulement sur threshold.json :
+# celui-ci est versionné (il documente le seuil et les métriques citées dans le
+# dossier), alors que scaler.joblib / isolation_forest.joblib / autoencoder.pt
+# sont ignorés par git. Tester threshold.json seul produisait donc une image
+# sans modèle : le détecteur démarrait en `degraded` et e2e_demo.py échouait.
+RUN if [ ! -f threshold.json ] || [ ! -f scaler.joblib ] \
+        || [ ! -f isolation_forest.joblib ] || [ ! -f autoencoder.pt ]; then \
+        echo "Artefacts incomplets : entraînement (repli synthétique si pas de capture)" && \
         python train.py --epochs 400 ; \
     else \
         echo "Artefacts présents : modèle figé" ; \

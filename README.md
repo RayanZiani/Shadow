@@ -8,24 +8,29 @@ d'anomalies par machine learning et remédiation autonome. Workshop M2 2026.
 | Brique | État | Preuve |
 |---|---|---|
 | `payment-api` | Fonctionnel : registre d'outputs, leurres gamma, anti-double-dépense, PIN, sonde | `tools/e2e_demo.py` |
-| `ml-detector` | Modèle entraîné, seuil appris, anti-rebond, diagnostic | `threshold.json` (métriques) |
-| `remediation-engine` | Bus d'états SSE, remédiation asynchrone, verrou | 7 + 5 tests |
+| `ml-detector` | Modèle entraîné sur capture réelle, seuil appris, anti-rebond, diagnostic | `threshold.json` (métriques), 11 tests |
+| `remediation-engine` | Bus d'états SSE, remédiation asynchrone, verrou, Ansible réel dans l'image | 7 + 5 tests |
 | `front-dashboard` | 4 quadrants, anneau SVG miroir du terminal, SSE | `npm run build` |
-| `hardware/bridge` | Pont SSE → USB, reconnexion, mode répétition | `--dry-run` |
+| `hardware/bridge` | Pont SSE → USB, reconnexion, mode répétition | 9 tests + `--dry-run` |
 | `hardware/ring_signer_hsm` | Firmware ESP32, 5 états, parseur de trame | à flasher |
-| `monero-crypto-core` | **Squelette** : stealth-address réel, CLSAG à brancher | voir plus bas |
+| `monero-crypto-core` | **Squelette** : stealth-address réel, CLSAG à brancher | 4 tests Rust |
+| `auth-service` | Clé JWT lue dans **Vault** (KV v2), fallback explicite sinon | 5 tests |
+| `shadow-api` | Honeypot fonctionnel, **non alimenté** (WAF non branché) | 4 tests |
 
-**Chaîne P0 mesurée** : attaque → détection → remédiation → transaction de
-preuve en **12,3 s** (limite fixée à 90 s, marge 78 s). Répétable.
+**Chaîne P0 mesurée sur Docker** : attaque → détection → remédiation → transaction
+de preuve en **6,2 à 6,3 s** (limite 90 s, marge ≈ 84 s), 3 exécutions
+consécutives. 13 conteneurs `Up`, Ansible réel, noyau Rust compilé.
 
 ## Démarrage
 
+Guide complet (Docker, Rust, Python, Node, Vault, dépannage) :
+[`docs/INSTALLATION-LOCAL.md`](docs/INSTALLATION-LOCAL.md).
+
 ```bash
 cp .env.example .env
-docker compose up db-postgres vault -d
-docker compose up monero-crypto-core payment-api auth-service -d
-docker compose up ml-detector remediation-engine shadow-api -d
-docker compose up front-dashboard -d
+docker compose build      # ~6-8 min la première fois
+docker compose up -d
+docker compose ps         # tout doit être Up / healthy
 ```
 
 Le modèle ML est entraîné **à la construction de l'image** (jamais en live).
@@ -48,6 +53,20 @@ python tools/e2e_demo.py
 Lance une vraie attaque (leurres empoisonnés), attend la détection et la
 remédiation, vérifie qu'une transaction passe ensuite, et chronomètre.
 Code de sortie 0 = chaîne complète. À lancer avant chaque soutenance.
+Le script attend que la fenêtre du détecteur soit vide avant de mesurer :
+deux exécutions consécutives donnent donc le même résultat.
+
+## Tests
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+./tools/run_tests.sh
+```
+
+53 tests : bus d'états et flux d'incident (12), détecteur ML (11), API de
+paiement (8), pont hardware (9), noyau Rust (4), honeypot (4), auth-service (5).
 
 ## Le pipeline ML, en une page
 
@@ -101,10 +120,15 @@ physiquement justifiée.
 - **`monero-crypto-core`** : `ring-sign` / `ring-verify` / `audit-view` sont des
   placeholders. C'est la brique la plus lourde et la plus différenciante
   (CLSAG + engagements de Pedersen + View Key séparée). Priorité absolue.
-- `auth-service` : la clé JWT doit être lue dans Vault, pas dans une variable
-  d'environnement.
-- `remediation_playbook.yml` : retirer les `ignore_errors` au fur et à mesure
-  que chaque endpoint admin existe réellement.
+  `stealth-address` est réel, et les entrées invalides renvoient 400 au lieu de
+  tuer le worker (corrigé : un hex trop court provoquait un panic).
+- **WAF / SIEM** : le honeypot `shadow-api` existe et est testé, mais aucun
+  service ne lui redirige le trafic (service `waf` encore commenté).
+- **RAG Ollama** : non commencé (pilier IA/DATA partiel).
+- **Dossier EBIOS RM / PCA-PRA / NIS2-DORA** : non commencé. C'est 10 points
+  nationaux, et le tableau de reprise après panne de
+  `docs/hardware/CONCEPT-PHYSIQUE.md` §6 est déjà un modèle du genre attendu.
+- **Modèle 3D** : v1 paramétrique non imprimée ; mesurer le terminal avant.
 
 ## Priorités
 

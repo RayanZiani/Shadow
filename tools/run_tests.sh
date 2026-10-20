@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Lance TOUS les tests du dépôt, service par service.
+#
+#   ./tools/run_tests.sh          # tout
+#   ./tools/run_tests.sh --fast   # sans l'entraînement/validation ML
+#
+# Prérequis : un venv à la racine (voir README « Tests ») et, pour le noyau
+# cryptographique, cargo (rustup). Le script s'arrête au premier échec et
+# affiche un récapitulatif.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="${PYTHON:-$ROOT/.venv/bin/python}"
+FAILED=()
+PASSED=()
+
+run() {
+  local name="$1"; shift
+  printf '\n\033[1m=== %s\033[0m\n' "$name"
+  if "$@"; then
+    PASSED+=("$name")
+  else
+    FAILED+=("$name")
+  fi
+}
+
+if [[ ! -x "$PY" ]]; then
+  echo "Python introuvable : $PY"
+  echo "Créez le venv :  python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt"
+  exit 2
+fi
+
+run "remediation-engine (bus d'états)" \
+  bash -c "cd '$ROOT/services/remediation-engine' && '$PY' -m pytest test_state_bus.py -q"
+run "remediation-engine (flux d'incident)" \
+  bash -c "cd '$ROOT/services/remediation-engine' && '$PY' test_incident_flow.py"
+run "ml-detector (features & anti-rebond)" \
+  bash -c "cd '$ROOT/services/ml-detector' && '$PY' -m pytest test_detector.py -q"
+run "payment-api (modèle de menace)" \
+  bash -c "cd '$ROOT/services/payment-api' && '$PY' -m pytest test_payment_api.py -q"
+run "shadow-api (honeypot)" \
+  bash -c "cd '$ROOT/services/shadow-api' && '$PY' -m pytest test_shadow_api.py -q"
+run "auth-service (gestion de la clé JWT)" \
+  bash -c "cd '$ROOT/services/auth-service' && '$PY' -m pytest test_auth_service.py -q"
+run "hardware (contrat série)" \
+  bash -c "cd '$ROOT/hardware/bridge' && '$PY' -m pytest test_hardware_bridge.py -q"
+
+if command -v cargo >/dev/null 2>&1; then
+  run "monero-crypto-core (Rust)" \
+    bash -c "cd '$ROOT/services/monero-crypto-core' && cargo test --release -q"
+else
+  echo "cargo absent : tests Rust ignorés (installez rustup)"
+fi
+
+if [[ "${1:-}" != "--fast" ]]; then
+  run "ml-detector (artefacts présents)" \
+    bash -c "cd '$ROOT/services/ml-detector' && '$PY' train.py --check >/dev/null"
+fi
+
+printf '\n\033[1m=== Récapitulatif ===\033[0m\n'
+for name in "${PASSED[@]:-}"; do [[ -n "$name" ]] && printf '  OK    %s\n' "$name"; done
+for name in "${FAILED[@]:-}"; do [[ -n "$name" ]] && printf '  ECHEC %s\n' "$name"; done
+
+if ((${#FAILED[@]})); then
+  exit 1
+fi
+echo "  Tout est vert."

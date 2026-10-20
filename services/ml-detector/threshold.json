@@ -1,13 +1,13 @@
 {
-  "iso_mean": 0.47604194765988483,
-  "iso_std": 0.054683587961553703,
-  "ae_mean": 0.5626132488250732,
-  "ae_std": 0.4010615646839142,
+  "iso_mean": 0.45668076770933047,
+  "iso_std": 0.056243127657228394,
+  "ae_mean": 0.21518243849277496,
+  "ae_std": 0.5706571340560913,
   "source": "capture:baseline.jsonl",
   "calibration_set": "holdout_25pct",
   "score_function": "max(0.5*z_iso+0.5*z_ae, z_median_age)",
-  "trained_at": "2026-10-19T21:56:50Z",
-  "n_normal": 199,
+  "trained_at": "2026-10-20T08:38:46Z",
+  "n_normal": 1089,
   "features": [
     "decoy_median_age_days",
     "ring_verify_cpu_us",
@@ -16,17 +16,17 @@
     "ring_age_skewness",
     "tx_latency_p95"
   ],
-  "threshold": 3.3685283629811593,
+  "threshold": 4.911498133522608,
   "threshold_estimators": {
-    "percentile_99.5": 2.0722,
-    "mean_plus_4std": 3.3685,
-    "retained": 3.3685
+    "percentile_99.5": 4.9115,
+    "mean_plus_4std": 3.727,
+    "retained": 4.9115
   },
   "evaluation": {
-    "false_positive_rate": 0.005,
+    "false_positive_rate": 0.002,
     "false_positive_rate_3_consecutive": 0.0,
-    "attack_recall": 0.8106,
-    "n_test_normal": 199,
+    "attack_recall": 1.0,
+    "n_test_normal": 500,
     "n_test_attack": 1600
   }
 }

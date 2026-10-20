@@ -6,6 +6,7 @@ il voit des Canary Key Images, et chaque appel est loggé pour le SIEM.
 import logging
 import random
 import time
+from collections import deque
 
 from fastapi import FastAPI, Request
 
@@ -14,7 +15,10 @@ logger = logging.getLogger("shadow-api")
 
 app = FastAPI(title="shadow-api")
 
-intercepted_log: list[dict] = []
+# Borne mémoire : un attaquant qui tape 10 000 requêtes ne doit pas faire
+# grossir indéfiniment le journal du honeypot (et donc la réponse du dashboard).
+MAX_LOG = 500
+intercepted_log: deque[dict] = deque(maxlen=MAX_LOG)
 
 
 def _log_interception(request: Request, extra: dict):
@@ -49,7 +53,7 @@ async def fake_submit(request: Request):
 @app.get("/admin/interceptions")
 def list_interceptions():
     """Lu par le dashboard pour afficher le flux d'interception en direct."""
-    return {"count": len(intercepted_log), "entries": intercepted_log[-50:]}
+    return {"count": len(intercepted_log), "entries": list(intercepted_log)[-50:]}
 
 
 @app.get("/healthz")

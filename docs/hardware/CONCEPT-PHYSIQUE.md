@@ -46,15 +46,21 @@ Le clavier n'est pas décoratif : il produit les features que `ml-detector` atte
 Le point d'entrée est `POST /pin/verify` dans `payment-api` (compteur de refus sur
 une fenêtre de 30 s, `GET /pin/stats` pour le dashboard).
 
-| Feature (`services/ml-detector/detector.py`) | Origine physique | État |
+| Feature (`services/ml-detector/features.py`) | Origine physique | État |
 |---|---|---|
 | `key_image_rejection_ratio` | ratio de PIN refusés (`/pin/verify`) | **branché** |
-| `inter_arrival_jitter` | cadence de frappe / de requêtes | branché (horodatages) |
+| `inter_arrival_median` | cadence de frappe / de requêtes | branché (horodatages) |
 | `tx_latency_p95` | temps de réponse perçu par le terminal | branché |
+| `decoy_median_age_days` | âge médian des leurres tirés (`/decoys`) | branché (registre réel) |
+| `ring_age_skewness` | asymétrie des âges de l'anneau | branché (registre réel) |
+| `ring_verify_cpu_us` | temps de vérification cryptographique | branché, **muet tant que CLSAG est un placeholder** |
 
-`decoy_entropy` et `ring_age_skewness` restent à brancher : ils demandent une
-vraie table d'outputs, pas un compteur en mémoire. On ne les invente pas — un
-modèle entraîné sur du bruit est pire qu'un placeholder assumé.
+Les six features sont donc alimentées par le vrai chemin. Une seule porte le
+signal de l'attaque principale (`decoy_median_age_days`, AUC 1,00) ; les autres
+servent les autres familles d'attaques. `ring_verify_cpu_us` ne mesurera
+quelque chose qu'une fois la vraie vérification d'anneau branchée : on ne
+l'invente pas — un modèle entraîné sur du bruit est pire qu'un placeholder
+assumé.
 
 **Le clavier ne peut pas déclencher de remédiation.** Un PIN correct autorise une
 transaction de démonstration, qui passe ensuite par `/tx/submit` comme n'importe
