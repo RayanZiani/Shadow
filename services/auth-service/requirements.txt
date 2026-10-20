@@ -1,5 +1,13 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-jose[cryptography]==3.3.0
-httpx==0.27.2
-pydantic==2.9.2
+# Versions FIGÉES sur celles que la suite de tests exécute réellement (voir le
+# commentaire détaillé dans services/payment-api/requirements.txt).
+fastapi==0.152.0
+starlette==1.9.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+pydantic==2.14.1
+# 3.4.0 corrige PYSEC-2024-232/233, PYSEC-2025-185 et PYSEC-2026-4298.
+# Les avis portant sur `pyasn1` et `ecdsa` (dépendances transitives) ne sont
+# PAS atteignables : l'algorithme est HS256 (`JWT_ALGO` dans main.py), donc ni
+# le backend RSA (pyasn1) ni le backend ECDSA ne sont importés. Justification
+# écrite dans docs/SECURITE.md §6.
+python-jose[cryptography]==3.4.0

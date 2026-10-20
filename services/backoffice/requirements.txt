@@ -1,7 +1,11 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-pydantic==2.9.2
-numpy==2.1.1
+# Versions FIGÉES sur celles que la suite de tests exécute réellement (voir le
+# commentaire détaillé dans services/payment-api/requirements.txt).
+fastapi==0.152.0
+starlette==1.9.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+pydantic==2.14.1
+numpy==2.5.4
 # OpenCV en version "headless" : aucun serveur graphique dans l'image.
 # YuNet (détection) et SFace (descripteur 128-d) sont fournis par ce wheel.
-opencv-python-headless==4.10.0.84
+opencv-python-headless==5.0.0.93

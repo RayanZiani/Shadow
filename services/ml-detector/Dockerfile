@@ -1,7 +1,11 @@
 FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# `--extra-index-url` : `torch==2.14.1+cpu` n'existe que sur l'index CPU. Sans
+# lui, pip télécharge le wheel CUDA (~2,5 Go) ou échoue à résoudre la version.
+RUN pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r requirements.txt
 COPY . .
 
 # Entraînement à la construction si aucun artefact n'est présent.
@@ -27,6 +31,12 @@ RUN if [ ! -f threshold.json ] || [ ! -f scaler.joblib ] \
     else \
         echo "Artefacts présents : modèle figé" ; \
     fi
+
+# Le chargement est VÉRIFIÉ à la construction. Un artefact produit par une
+# version plus récente de scikit-learn ou de torch se recharge mal (ou pas) :
+# mieux vaut un build rouge le 21/10 qu'un détecteur `degraded` le jour de la
+# soutenance. `train.py --check` charge les trois artefacts et le seuil.
+RUN python train.py --check
 
 EXPOSE 8083
 CMD ["uvicorn", "detector:app", "--host", "0.0.0.0", "--port", "8083"]

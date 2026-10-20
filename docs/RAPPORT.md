@@ -764,7 +764,7 @@ alerte Prometheus.
 Détail complet des chantiers restants, avec critères d'acceptation :
 [`TODO.md`](../TODO.md).
 
-Journal technique des trois sessions, avec les mesures et les erreurs :
+Journal technique des cinq sessions, avec les mesures et les erreurs :
 [`COMPTE-RENDU.md`](COMPTE-RENDU.md).
 
 Analyse de risques, PCA/PRA, NIS2/DORA :

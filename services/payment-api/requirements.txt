@@ -1,7 +1,17 @@
-﻿fastapi==0.115.0
-uvicorn[standard]==0.30.6
-httpx==0.27.2
-pydantic==2.9.2
+﻿# Versions FIGÉES sur celles que la suite de tests exécute réellement.
+#
+# Pourquoi c'est important : les requirements figeaient fastapi 0.115.0, qui
+# installe starlette 0.38.6 — version touchée par sept avis PYSEC (multipart non
+# borné, Host non validé, StaticFiles sur Windows). Les tests, eux, tournaient
+# sur fastapi 0.152 / starlette 1.9. Autrement dit : l'image n'était pas ce que
+# les tests validaient.
+#
+# `pip-audit -r services/*/requirements.txt` doit rester sans vulnérabilité.
+fastapi==0.152.0
+starlette==1.9.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+pydantic==2.14.1
 # Persistance du registre d'outputs. Sans ce paquet, le registre retombe en
 # mémoire et /healthz publie `registry.durable: false` : le service fonctionne,
 # mais un redémarrage perd la transaction de preuve.

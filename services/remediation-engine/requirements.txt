@@ -1,3 +1,7 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-pydantic==2.9.2
+# Versions FIGÉES sur celles que la suite de tests exécute réellement (voir le
+# commentaire détaillé dans services/payment-api/requirements.txt).
+fastapi==0.152.0
+starlette==1.9.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+pydantic==2.14.1

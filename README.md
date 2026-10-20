@@ -57,6 +57,7 @@ marge ≈ 83 s), sur trois exécutions consécutives.
 | [`docs/GOUVERNANCE.md`](docs/GOUVERNANCE.md) | EBIOS RM, PCA/PRA, NIS2, DORA |
 | [`docs/DEMO.md`](docs/DEMO.md) | Runbook de soutenance (3 min, seconde par seconde) |
 | [`docs/REGLES-JURY-20-10.md`](docs/REGLES-JURY-20-10.md) | Nouvelles règles du 20/10 : ce qui est livré, prouvé, et ce qui reste |
+| [`docs/PLAN-TRAITE-FINALE.md`](docs/PLAN-TRAITE-FINALE.md) | Les trois jours restants, heure par heure, et la définition de « prêt à démontrer » |
 | [`docs/INSTALLATION-LOCAL.md`](docs/INSTALLATION-LOCAL.md) | Installation du poste (Windows d'abord) et recette |
 | [`docs/mesures-charge.md`](docs/mesures-charge.md) | Mesures de charge : débit, latence, point de rupture |
 | [`docs/hardware/CONCEPT-PHYSIQUE.md`](docs/hardware/CONCEPT-PHYSIQUE.md) | Objet physique : rôle, contrat d'état, câblage, bandeau LED |

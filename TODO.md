@@ -28,7 +28,7 @@ changeaient l'architecture :
 | N2 | **Front** qui présente des articles (en base) | **livré** | `GET /products`, catalogue de 6 articles en base |
 | N3 | **Back** qui gère tout cela | **livré** | `front-dashboard/src/shop/AdminShop.jsx` + `/admin/products`, `/admin/orders` |
 | N4 | **Paiement en ligne** avec stockage, **historique** des achats et des paiements | **livré** | `POST /checkout` → `payment-api /tx/pay` (bLSAG) → tables `orders`, `payments`, `payment_events` |
-| N5 | SI **invulnérable**, aucune faille volontaire | **livré (1ʳᵉ passe)** | §0.5.1 : 7 failles réelles fermées |
+| N5 | SI **invulnérable**, aucune faille volontaire | **livré (1ʳᵉ passe)** | §0.5.1 : 12 failles réelles fermées, 4 bugs critiques |
 | N6 | **IA** : RAG, surveillance des alertes SIEM, remédiation autonome | **livré (socle)** | `services/rag-assistant`, `POST /alert` + Alertmanager → playbook |
 
 ### 0.5.1 Failles réelles fermées (N5)
@@ -47,16 +47,21 @@ trous qu'un jury CYBER exploite en quelques minutes.
 | **Entrées non strictes** (boutique) | quantité `"3"` convertie silencieusement ; SKU `X'; DROP TABLE …` stocké | `strict=True` sur les entiers, motif sur le SKU → 422 |
 
 - [x] **Audit de sécurité systématique** — M
-  `docs/SECURITE.md` : **7 failles fermées** (chacune avec son test), mesures par
-  catégorie (auth, autorisation, données, en-têtes, secrets), **7 limites
+  `docs/SECURITE.md` : **12 failles fermées** (chacune avec son test), mesures par
+  catégorie (auth, autorisation, données, en-têtes, secrets), **10 limites
   assumées et écrites**, et une recette CYBER en 6 commandes `curl`.
   **Reste** : un audit externe, hors périmètre étudiant.
 
-- [ ] **Scan de dépendances** — S
-  `pip-audit` sur les `requirements.txt`, `cargo audit` sur le noyau,
-  `npm audit` sur le dashboard.
-  **Acceptation** : aucune vulnérabilité `HIGH`/`CRITICAL` non justifiée par
-  écrit.
+- [x] **Scan de dépendances** — fait le 20/10 au soir
+  `pip-audit` sur les neuf `requirements.txt`. Il a trouvé `starlette 0.38.6`
+  (7 avis PYSEC) dans les images alors que les tests tournaient sur 1.9 :
+  versions alignées sur celles réellement testées, `python-jose` 3.3.0 → 3.4.0.
+  Restent `pyasn1` et `ecdsa`, **transitifs et non atteignables** (HS256
+  seulement), et `PYSEC-2026-4298` sans correctif : justification écrite dans
+  `docs/SECURITE.md` §7.
+  **Reste** : `cargo audit` (cargo absent de ce poste) et `npm audit` sur le
+  dashboard. À lancer le 21/10 ; le remplacement de `python-jose` par `PyJWT`
+  est la première tâche d'après-workshop.
 
 - [ ] **TLS sur le back-office et la boutique** — M
   Aujourd'hui tout est en HTTP sur `localhost` (la caméra l'exige). En

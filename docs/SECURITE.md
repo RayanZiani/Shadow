@@ -260,11 +260,60 @@ points moyens** relevés par l'audit ; le reste est suivi ligne par ligne dans
 `TODO.md` §0.6, avec un critère d'acceptation. Rien n'est retiré de cette liste
 parce qu'il aurait été « presque » corrigé.
 
-**Une vérification qui reste à faire sur la pile.** `payment-api` et `shop-api`
-créent tous les deux une table `payments` dans la **même** base `shadow_settle`
-(colonnes différentes : `reference/key_image/...` d'un côté,
+**Une collision de schéma, trouvée puis fermée.** `payment-api` et `shop-api`
+créaient tous les deux une table `payments` dans la **même** base
+`shadow_settle` (colonnes différentes : `reference/key_image/...` d'un côté,
 `order_id/provider/...` de l'autre). Avec `CREATE TABLE IF NOT EXISTS`, le
-premier service démarré impose son schéma. Ce point n'a **pas** été reproduit
-sur ce poste (Docker absent) : il doit être vérifié par `docker compose up`
-avant la soutenance, et les tables renommées ou séparées par schéma si le conflit
-est confirmé.
+premier service démarré imposait son schéma et l'autre échouait à l'insertion
+(« column does not exist ») — l'achat aurait été cassé sous Docker, alors que
+les tests unitaires, eux, passaient (chaque service teste sa propre base).
+Le registre écrit désormais dans **`registry_payments`**, et
+`tools/check_compose.py` refuse toute table homonyme entre deux services
+(contrôle statique, joué par `run_tests.ps1`). La correction n'a pas été
+rejouée sous `docker compose up` sur ce poste : c'est la première vérification
+du 21/10.
+
+---
+
+## 7. Dépendances — `pip-audit`, et ce qui reste
+
+```bash
+pip-audit -r services/payment-api/requirements.txt \
+          -r services/shop-api/requirements.txt \
+          -r services/rag-assistant/requirements.txt \
+          -r services/ml-detector/requirements.txt \
+          -r services/backoffice/requirements.txt \
+          -r services/auth-service/requirements.txt \
+          -r services/waf/requirements.txt \
+          -r services/shadow-api/requirements.txt \
+          -r services/remediation-engine/requirements.txt
+```
+
+**Ce que le scan a trouvé, et ce qui a été corrigé.** Les `requirements.txt`
+figeaient `fastapi==0.115.0`, qui installe **starlette 0.38.6** — touchée par
+sept avis PYSEC (multipart non borné, `Host` non validé, `StaticFiles` sur
+Windows). Les tests, eux, tournaient sur `fastapi 0.152` / `starlette 1.9` :
+l'image n'était pas ce que la suite validait. Les versions ont été alignées sur
+celles réellement testées (`fastapi 0.152.0`, `starlette 1.9.0`, `pydantic
+2.14.1`, `numpy 2.5.4`, `scikit-learn 1.9.1`, `torch 2.14.1`), et
+`python-jose` est passé de 3.3.0 à **3.4.0** (PYSEC-2024-232/233,
+PYSEC-2025-185).
+
+**Ce qui reste, et pourquoi c'est justifié par écrit.** Le scan remonte encore
+deux dépendances **transitives** de `python-jose`, non atteignables dans ce SI :
+
+| Paquet | Avis | Pourquoi il n'est pas atteignable |
+|---|---|---|
+| `pyasn1` 0.4.8 | PYSEC-2026-2263/3455/3456/3457 (DoS par décodage ASN.1) | `python-jose` ne l'importe que pour le backend **RSA**. L'algorithme est `HS256` (`JWT_ALGO` dans `services/auth-service/main.py`) : aucun chemin ne décode de l'ASN.1 fourni par un client. |
+| `ecdsa` 0.19.2 | PYSEC-2026-1325 (Minerva, courbe P-256) | Le backend **ECDSA** n'est jamais utilisé (HS256). Aucune signature de courbe dans le SI. |
+
+`python-jose` lui-même porte **PYSEC-2026-4298** (confusion de clé : une clé
+publique DER acceptée comme secret HMAC). Il n'y a **pas de correctif** publié.
+La condition d'exploitation est l'existence d'une clé **asymétrique** dont la
+partie publique serait connue de l'attaquant : ici le secret HMAC est une valeur
+aléatoire lue dans Vault, jamais distribuée, et aucun chemin asymétrique
+n'existe. C'est une limite écrite, pas une faille ouverte.
+
+**Décision assumée** : on ne remplace pas `python-jose` par `PyJWT` trois jours
+avant la soutenance. Le remplacement est la première tâche après le workshop
+(`TODO.md` §0.6.6).
