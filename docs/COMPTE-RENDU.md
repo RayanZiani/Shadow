@@ -1082,9 +1082,23 @@ elles. Ces corrections sont dans le code, pas seulement dans ce document.
 | **3 panneaux PostgreSQL dans Grafana** | connexions actives, taille de la base, transactions longues |
 | **`tools/run_tests.ps1`** | les mêmes suites sous Windows PowerShell, récapitulatif et codes de sortie identiques |
 | **`tools/preflight.py`** | pré-vol de soutenance : secrets, PIN réellement transmis, santé des services, dépôt livrable |
+| **Collision de tables `payments`** | le registre écrit dans `registry_payments` : sans ça, la boutique échouait à l'insertion sous Docker |
+| **Dépendances alignées sur les tests** | fastapi 0.152 / starlette 1.9 dans les images (7 avis PYSEC fermés), `python-jose` 3.4.0 |
 
-Plusieurs de ces lignes figurent encore comme « à faire » dans `TODO.md` §0.6 :
-le fichier n'a pas été remis à jour après cette deuxième passe.
+Trois défauts trouvés par la relecture de cette deuxième passe méritent d'être
+cités, parce qu'ils auraient tous les trois cassé la démonstration :
+
+1. **le PIN généré n'était pas transmis** au conteneur `payment-api` : le
+   présentateur aurait tapé un PIN que le service ne connaissait pas ;
+2. **`payment-api` et `shop-api` créaient tous les deux la table `payments`**
+   dans la même base : `CREATE TABLE IF NOT EXISTS` laissait gagner le premier
+   démarré, et l'achat échouait sur une colonne inexistante ;
+3. **les images n'installaient pas les versions testées** : `fastapi 0.115`
+   (donc `starlette 0.38.6`, sept avis PYSEC) contre `0.152` dans le venv.
+
+`TODO.md` §0.6 a été remis à jour : les points fermés y restent visibles avec
+leur preuve, et les deux seuls restes (graine aléatoire des leurres, format du
+`fingerprint` dans un test) y sont explicitement écrits.
 
 ### 12.7 Ce que la session n'a pas fait
 
