@@ -38,6 +38,11 @@ def log(message: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default=SHOP)
+    parser.add_argument(
+        "--allow-sqlite",
+        action="store_true",
+        help="accepter SQLite (poste sans Docker) au lieu d'exiger PostgreSQL",
+    )
     args = parser.parse_args()
     base = args.base
 
@@ -57,7 +62,17 @@ def main() -> int:
             log(f"boutique injoignable ({type(exc).__name__}) — docker compose up -d shop-api")
             return 1
         check(health.get("status") == "ok", "boutique saine", health.get("database", "?"))
-        check(health.get("database") == "postgresql", "base PostgreSQL", health.get("database", "?"))
+        if args.allow_sqlite:
+            print(
+                f"  [ATTENTION] base {health.get('database')} : correct pour un poste "
+                "sans Docker, PostgreSQL reste la cible de démonstration"
+            )
+        else:
+            check(
+                health.get("database") == "postgresql",
+                "base PostgreSQL",
+                f"{health.get('database')} — utiliser --allow-sqlite pour un test local",
+            )
 
         try:
             crypto = client.get(f"{PAYMENT}/healthz").json()

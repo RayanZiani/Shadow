@@ -136,11 +136,11 @@ python3 -m venv .venv
 | shadow-api | `services/shadow-api/test_shadow_api.py` (4) | honeypot : jamais d'erreur visible, journal borné |
 | auth-service | `services/auth-service/test_auth_service.py` (9) | clé lue dans Vault, 503 si Vault muet, cache et rotation |
 | back-office | `services/backoffice/test_backoffice.py` (25) | parcours identifiant → visage → mot de passe, refus, blocage 5 min, LED, habilitations, audit |
-| boutique | `services/shop-api/test_shop_api.py` (18) | catalogue en base, panier, achat, stock réservé puis restitué, historique par capability token, administration |
+| boutique | `services/shop-api/test_shop_api.py` (21) | catalogue en base, panier, achat, stock réservé puis restitué, historique par capability token, administration |
 | assistant RAG | `services/rag-assistant/test_rag.py` (12) | index BM25 du dossier, question de référence, citations, mode dégradé extractif |
 | ingestion SIEM | `services/remediation-engine/test_alert_ingest.py` (8) | une alerte actionnable ouvre un incident, une alerte de confort non, anti-rebond, jeton |
 
-Soit **159 tests**. Les tests HTTP du noyau se déclarent ignorés si
+Soit **162 tests**. Les tests HTTP du noyau se déclarent ignorés si
 `docker compose` n'est pas démarré. `cargo test` est lancé par `run_tests.sh` si `cargo` est
 présent.
 

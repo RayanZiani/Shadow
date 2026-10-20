@@ -97,7 +97,10 @@ def attack_forged_cart(client: httpx.Client) -> dict:
             results[label] = response.status_code
         except httpx.HTTPError as exc:
             results[label] = type(exc).__name__
-    refused = all(code in (400, 404, 422) for code in results.values())
+    # 307 = redirection FastAPI pour `/cart/` (barre finale). Ce n'est pas une
+    # fuite : le panier n'est pas rendu, la requête est redirigée vers une route
+    # qui n'existe pas sans jeton.
+    refused = all(code in (307, 400, 404, 422) for code in results.values())
     return {"cases": results, "refused": refused}
 
 
@@ -126,7 +129,10 @@ def attack_sku_injection(client: httpx.Client) -> dict:
 
     # Le catalogue doit toujours répondre : la table n'a pas été supprimée.
     catalog_ok = client.get(f"{SHOP}/products", timeout=5.0).status_code == 200
-    return {"cases": results, "catalog_intact": catalog_ok}
+    # Aucune charge utile ne doit être stockée : toutes doivent être refusées
+    # par le format de SKU (422).
+    all_refused = all(code == 422 for code in results.values())
+    return {"cases": results, "catalog_intact": catalog_ok, "all_refused": all_refused}
 
 
 def attack_history_scraping(client: httpx.Client) -> dict:
@@ -155,14 +161,25 @@ def attack_history_scraping(client: httpx.Client) -> dict:
         )
         results[label] = response.status_code
 
+    # Lister avec un capability token inventé doit renvoyer 200 **avec zéro
+    # commande** : c'est la bonne réponse (le token ne correspond à personne).
+    # Un 200 n'est donc pas un échec — c'est le nombre de commandes qui compte.
     listing = client.get(
         f"{SHOP}/orders", params={"customer_ref": "1" * 32}, timeout=5.0
     )
-    results["list_all"] = listing.status_code
-    results["orders_returned"] = len(listing.json().get("orders", [])) if listing.status_code == 200 else -1
+    results["list_with_fake_token"] = listing.status_code
+    leaked = len(listing.json().get("orders", [])) if listing.status_code == 200 else 0
 
-    refused = all(code in (400, 404) for key, code in results.items() if key != "orders_returned")
-    return {"cases": results, "refused": refused, "empty": results["orders_returned"] == 0}
+    # Seules les routes de DÉTAIL doivent renvoyer 404. La liste avec un
+    # capability token inventé renvoie 200 et zéro commande : c'est correct.
+    detail_cases = ("no_token", "guess", "sql")
+    refused = all(results[key] in (400, 404) for key in detail_cases)
+    return {
+        "cases": results,
+        "refused": refused,
+        "orders_leaked": leaked,
+        "empty": leaked == 0,
+    }
 
 
 def attack_oversell(client: httpx.Client) -> dict:
@@ -278,8 +295,12 @@ def run_shop() -> int:
             failures.append("panier forgé accessible")
         if not summary["sku_injection"]["catalog_intact"]:
             failures.append("catalogue détruit par injection")
-        if not summary["history_scraping"]["refused"] or not summary["history_scraping"]["empty"]:
+        if not summary["sku_injection"]["all_refused"]:
+            failures.append("charge utile SQL stockée comme SKU")
+        if not summary["history_scraping"]["refused"]:
             failures.append("historique d'autrui lisible")
+        if not summary["history_scraping"]["empty"]:
+            failures.append("commandes d'autrui retournées")
         oversell = summary["oversell"]
         if "skipped" not in oversell:
             if not oversell["no_negative_stock"]:

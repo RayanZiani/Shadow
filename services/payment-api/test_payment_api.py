@@ -188,15 +188,27 @@ def test_anneau_trop_grand_refuse(client):
     Un attaquant n'a pas besoin d'une clé : il suffit d'envoyer 100 000 leurres
     pour occuper le noyau. Le plafond est une mesure de disponibilité, pas de
     confidentialité.
+
+    Le test utilise des identifiants **réels** : avec des identifiants inconnus,
+    le refus viendrait de la validation des leurres et ne prouverait rien sur
+    le plafond.
     """
-    _register(5)
-    output_id = next(iter(main.OUTPUTS))
+    _register(100)
+    ids = list(main.OUTPUTS)
     response = client.post(
         "/tx/submit",
-        json={"real_output_id": output_id, "decoy_ids": [f"x{i}" for i in range(200)]},
+        json={"real_output_id": ids[0], "decoy_ids": ids[1:70]},
     )
     assert response.status_code == 400
-    assert "trop grand" in response.json()["detail"] or "inconnus" in response.json()["detail"]
+    assert "trop grand" in response.json()["detail"], response.json()
+
+    # Juste sous le plafond, la requête n'est pas refusée pour sa taille :
+    # elle passe la validation des leurres (le reste dépend du noyau crypto).
+    under = client.post(
+        "/tx/submit",
+        json={"real_output_id": ids[0], "decoy_ids": ids[1:60]},
+    )
+    assert "trop grand" not in str(under.json().get("detail", ""))
 
 
 def test_les_endpoints_admin_sont_fermes_sans_jeton(monkeypatch):

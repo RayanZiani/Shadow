@@ -387,3 +387,66 @@ def test_achats_simultanes_ne_survendent_pas(app, client, stub):
         "WHERE p.sku = 'VAULT-LIC' AND o.status = 'paid'"
     )
     assert len(orders) == 1, orders
+
+
+# ---------------------------------------------------------------------------
+# Durcissement : ce que le jury CYBER essaie en premier
+# ---------------------------------------------------------------------------
+def test_une_quantite_en_chaine_est_refusee(client):
+    """« 3 » n'est pas 3.
+
+    Accepter la coercition implicite n'est pas une faille, mais un contrat
+    exact se défend mieux : un client qui envoie une chaîne se trompe, et on
+    le lui dit (422) au lieu de deviner.
+    """
+    token, product = _cart_with(client, quantity=1)
+    for quantity in ("3", 2.5, -1, 0, 10_000):
+        response = client.post(
+            f"/cart/{token}/items",
+            json={"product_id": product["id"], "quantity": quantity},
+        )
+        assert response.status_code == 422, (quantity, response.status_code)
+
+
+def test_un_sku_malforme_est_refuse(client, monkeypatch):
+    """Un SKU est un identifiant de stock, pas une chaîne libre.
+
+    Les requêtes sont paramétrées, donc aucune de ces charges utiles n'injecte
+    quoi que ce soit. Mais les stocker laisserait pourrir la base et les
+    exports — et un juré qui voit `X'; DROP TABLE` dans le catalogue conclut
+    (à tort) que le SI est troué.
+    """
+    monkeypatch.setenv("SERVICE_TOKEN", "jeton-de-test")
+    headers = {"X-Service-Token": "jeton-de-test"}
+    for sku in ("X'; DROP TABLE products; --", "x' UNION SELECT 1 --", "x", "a b"):
+        response = client.post(
+            "/admin/products",
+            json={"sku": sku, "name": "injection", "price_cents": 100, "stock": 1},
+            headers=headers,
+        )
+        assert response.status_code == 422, (sku, response.status_code)
+
+    # Un SKU correct passe : on n'a pas cassé la fonctionnalité en durcissant.
+    ok = client.post(
+        "/admin/products",
+        json={"sku": "LEGIT-01", "name": "Article légitime", "price_cents": 100, "stock": 1},
+        headers=headers,
+    )
+    assert ok.status_code == 201
+    # Et le catalogue n'a pas bougé de travers.
+    assert client.get("/products").status_code == 200
+
+
+def test_un_prix_envoye_par_le_client_est_ignore(client, stub):
+    """Le total vient de la base, jamais du corps de la requête."""
+    token, product = _cart_with(client, quantity=1)
+    response = client.post(
+        "/checkout",
+        json={
+            "cart_token": token,
+            "total_cents": 1,
+            "items": [{"product_id": product["id"], "quantity": 1, "unit_price_cents": 0}],
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["order"]["total_cents"] == product["price_cents"]

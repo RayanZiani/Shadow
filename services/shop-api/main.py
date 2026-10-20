@@ -100,12 +100,15 @@ CATALOG = [
 # Modèles
 # ---------------------------------------------------------------------------
 class CartItemRequest(BaseModel):
-    product_id: int = Field(gt=0)
-    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY)
+    # `strict=True` : une chaîne « 3 » ou un flottant 2.5 est refusé (422) au
+    # lieu d'être converti. Le contrat est exact, et un client qui se trompe
+    # le voit immédiatement.
+    product_id: int = Field(gt=0, strict=True)
+    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY, strict=True)
 
 
 class QuantityRequest(BaseModel):
-    quantity: int = Field(ge=1, le=MAX_QUANTITY)
+    quantity: int = Field(ge=1, le=MAX_QUANTITY, strict=True)
 
 
 class CheckoutRequest(BaseModel):
@@ -113,8 +116,14 @@ class CheckoutRequest(BaseModel):
     customer_ref: str | None = None
 
 
+# Un SKU est un identifiant de stock : majuscules, chiffres, tiret. Autoriser
+# une chaîne libre (« X'; DROP TABLE products; -- ») n'injecte rien — les
+# requêtes sont paramétrées — mais laisse pourrir la base et les exports.
+SKU_PATTERN = r"^[A-Z0-9][A-Z0-9-]{1,31}$"
+
+
 class ProductCreate(BaseModel):
-    sku: str = Field(min_length=2, max_length=32)
+    sku: str = Field(min_length=2, max_length=32, pattern=SKU_PATTERN)
     name: str = Field(min_length=2, max_length=120)
     description: str = Field(default="", max_length=2000)
     price_cents: int = Field(gt=0, le=10_000_000)
