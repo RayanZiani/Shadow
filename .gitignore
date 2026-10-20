@@ -1,0 +1,45 @@
+# --- Secrets : règle éliminatoire du workshop, ne jamais committer ---
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.joblib
+*.pt
+
+# --- Artefacts ML ---
+# Le modèle est figé dans l'image Docker (voir services/ml-detector/Dockerfile).
+# Les binaires ne sont pas versionnés ; threshold.json si, car il documente le
+# seuil appris et les métriques d'évaluation citées dans le dossier technique.
+services/ml-detector/scaler.joblib
+services/ml-detector/isolation_forest.joblib
+services/ml-detector/autoencoder.pt
+# Baseline capturée localement : reproductible, mais propre à chaque poste.
+services/ml-detector/baseline.jsonl
+services/ml-detector/threshold_runtime.json
+
+# --- Node / dashboard ---
+node_modules/
+dist/
+.vite/
+
+# --- Modèles et artefacts 3D ---
+*.stl
+*.gcode
+*.3mf
+
+# --- OS / éditeurs ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
