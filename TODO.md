@@ -1,15 +1,113 @@
 # TODO — ce qui reste à faire
 
-> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (104 tests verts,
-> chaîne P0 en 6,6-7,2 s, 15 services `Up`).
-> **Mise à jour du 20/10** : la consigne additionnelle (authentification visage
-> du back-office + bandeau LED ESP8266) est livrée — 25 tests supplémentaires,
-> 15ᵉ service, voir `docs/CONSIGNE-ADDITIONNELLE.md` et §1.0 ci-dessous.
+> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (141 tests verts,
+> chaîne P0 en 6,6-7,2 s, 18 services `Up`).
+> **Mise à jour du 20/10 (soir)** : les nouvelles règles du jury changent le
+> périmètre — boutique en base, front vitrine, back d'administration, paiement
+> réel avec historique, RAG, ingestion SIEM. **Livré** : voir §0.5. Ce qui
+> reste est listé au même endroit, avec un critère d'acceptation.
 > Ce fichier liste **uniquement ce qui n'est pas fait**, avec un critère
 > d'acceptation vérifiable pour chaque ligne.
 
 Légende : `[ ]` à faire · `[~]` partiel · `[x]` fait
 Effort : **S** ≤ 2 h · **M** ≤ 1 j · **L** ≤ 3 j · **XL** > 3 j
+
+---
+
+## 0.5 Nouvelles règles du jury — écart, livré, restant
+
+Le jury a précisé le 20/10 ce qu'il attend. Six exigences, dont trois
+changeaient l'architecture :
+
+| # | Exigence du jury | État | Preuve |
+|---|---|---|---|
+| N1 | SI de paiement **comme un site vitrine**, connecté à une base | **livré** | `services/shop-api` (PostgreSQL) + `front-dashboard/src/shop/Storefront.jsx` |
+| N2 | **Front** qui présente des articles (en base) | **livré** | `GET /products`, catalogue de 6 articles en base |
+| N3 | **Back** qui gère tout cela | **livré** | `front-dashboard/src/shop/AdminShop.jsx` + `/admin/products`, `/admin/orders` |
+| N4 | **Paiement en ligne** avec stockage, **historique** des achats et des paiements | **livré** | `POST /checkout` → `payment-api /tx/pay` (bLSAG) → tables `orders`, `payments`, `payment_events` |
+| N5 | SI **invulnérable**, aucune faille volontaire | **livré (1ʳᵉ passe)** | §0.5.1 : 5 failles réelles fermées. Audit complet reste à faire |
+| N6 | **IA** : RAG, surveillance des alertes SIEM, remédiation autonome | **livré (socle)** | `services/rag-assistant`, `POST /alert` + Alertmanager → playbook |
+
+### 0.5.1 Failles réelles fermées (N5)
+
+Ces cinq points n'étaient pas des « failles de démonstration » : c'étaient des
+trous qu'un jury CYBER exploite en quelques minutes.
+
+| Faille | Exploit avant correction | Correction |
+|---|---|---|
+| `/auth/login` de `auth-service` acceptait **n'importe quel** `api_secret` | un JWT valide pour tout identifiant connu | vérification SHA-256 + `MERCHANT_SECRETS`, fail-closed 503 |
+| `/admin/*` de `payment-api` et du WAF **ouverts** | quarantaine de 25 outputs, anneau à 64, déception désarmée | `SERVICE_TOKEN` obligatoire, comparaison à temps constant |
+| `/incident` et `/state/report` **ouverts** | playbook déclenché par n'importe qui (déni de service) | idem |
+| **PIN `1234` codé en dur** | terminal ouvert avec une valeur publique | `TERMINAL_PIN` généré par `tools/init_env.py`, blocage après 5 échecs |
+| **Anneau non borné** sur `/tx/submit` | 100 000 leurres = saturation CPU | plafond à 64 leurres |
+
+- [ ] **Audit de sécurité systématique** — M
+  Checklist OWASP ASVS niveau 1 sur les 18 services : entrées, en-têtes,
+  CORS, méthodes HTTP, taille des corps, erreurs qui fuient des chemins.
+  **Acceptation** : un tableau « contrôle → état → preuve » dans
+  `docs/SECURITE.md`, zéro `TODO` de sécurité dans le code.
+
+- [ ] **Scan de dépendances** — S
+  `pip-audit` sur les `requirements.txt`, `cargo audit` sur le noyau,
+  `npm audit` sur le dashboard.
+  **Acceptation** : aucune vulnérabilité `HIGH`/`CRITICAL` non justifiée par
+  écrit.
+
+- [ ] **TLS sur le back-office et la boutique** — M
+  Aujourd'hui tout est en HTTP sur `localhost` (la caméra l'exige). En
+  production, TLS + HSTS. Voir §1.0.
+
+### 0.5.2 Ce qui reste sur la boutique (N1–N4)
+
+- [ ] **Test de bout en bout de l'achat sous Docker** — S
+  `tools/e2e_shop.py` : catalogue → panier → paiement réel → commande `paid`
+  → historique, en une commande, avec code de sortie.
+  **Acceptation** : `chain_complete: true`, commande visible dans
+  `/admin/orders`, stock décrémenté.
+
+- [ ] **Vérifier la persistance PostgreSQL au redémarrage** — S
+  `docker compose restart shop-api db-postgres` puis relire les commandes.
+  **Acceptation** : l'historique et le stock sont identiques après
+  redémarrage ; aucune commande perdue.
+
+- [ ] **Test de concurrence sur le stock** — S
+  Deux checkouts simultanés sur le dernier article.
+  **Acceptation** : une seule commande `paid`, l'autre en `409`, stock jamais
+  négatif. (Le code le fait ; il manque la mesure sous charge.)
+
+- [ ] **Migration du registre d'outputs vers PostgreSQL** — L
+  Toujours en mémoire (`payment-api`). Voir §1.3 : c'est la même base, la même
+  transaction, et cela supprime le dernier « redémarrage destructif ».
+
+- [ ] **Images produit** — S
+  `image_url` existe en base mais aucun fichier n'est servi.
+  **Acceptation** : un article avec image s'affiche dans la vitrine.
+
+### 0.5.3 Ce qui reste sur l'IA (N6)
+
+- [ ] **Faire tourner Ollama sur le PC IA** — M
+  `ollama pull llama3.1:8b` puis `OLLAMA_URL=http://<pc-ia>:11434`.
+  **Acceptation** : `/ask` renvoie `engine: ollama:llama3.1:8b` et une réponse
+  rédigée citant `docs/RAPPORT.md`.
+
+- [ ] **Brancher les logs (Loki) sur le SIEM** — M
+  Aujourd'hui Alertmanager pousse les **alertes Prometheus**. Les **logs**
+  (`loki`/`promtail`) ne sont toujours pas configurés (§2.2).
+  **Acceptation** : une erreur de `payment-api` déclenche une alerte Loki →
+  Alertmanager → `POST /alert` → playbook.
+
+- [ ] **Corrélation multi-alertes** — M
+  Une panne réelle produit 3 à 5 alertes en cascade. Aujourd'hui la première
+  ouvre l'incident, les suivantes sont ignorées pendant le verrou.
+  **Acceptation** : un incident unique est créé, avec la liste des alertes
+  corrélées dans `detail.alerts`.
+
+- [ ] **Scénario de démonstration « attaque sur la boutique »** — M
+  Le jury CYBER attaque le SI : il faut un scénario qui montre l'attaque sur
+  `shop-api` (panier forgé, quantité négative, checkout sans stock, rejeu de
+  paiement), la détection et la remédiation.
+  **Acceptation** : `tools/attack.py shop` → 4 attaques, toutes refusées
+  proprement (400/409), aucune commande créée, service toujours vivant.
 
 ---
 
@@ -300,19 +398,20 @@ Ne pas perdre de temps dessus, c'est un choix documenté :
 ## 6. Ordre d'exécution recommandé
 
 ```
-Fait        1.0 consigne additionnelle          ← livré : service, page, LED, tests
-            (reste : flasher la carte, enrôler l'admin, vivacité)
-Semaine 1   §0 (recalibrage + 3 répétitions)   ← bloquant, 1 h
-            1.2 AppRole Vault                   ← ½ j, gain immédiat en Q&A
-            2.2 observabilité propre            ← ½ j, évite un signal négatif
-Semaine 2   1.3 registre PostgreSQL             ← 2 j, supprime un risque de démo
-            1.1 Bulletproofs                    ← 3-5 j, seule faille crypto
-Semaine 3   1.4 RAG Ollama                      ← 2 j, complète le pilier IA/DATA
-            2.3 + 2.4 charge et chaos           ← 1 j, matière pour le dossier
-Semaine 4   §3 objet physique                   ← 1 j, non bloquant
-            Passe finale : §0 + 1.0             ← obligatoire la veille
+Fait        0.5 nouvelles règles du jury           ← boutique, RAG, SIEM, durcissement
+            (reste : e2e boutique, audit sécurité, Ollama réel, logs Loki)
+Semaine 1   §0 (recalibrage + 3 répétitions)       ← bloquant, 1 h
+            0.5.2 e2e boutique + concurrence       ← ½ j, prouve que l'achat marche
+            1.2 AppRole Vault                      ← ½ j, gain immédiat en Q&A
+Semaine 2   1.3 registre PostgreSQL                 ← 2 j, supprime un risque de démo
+            0.5.1 audit de sécurité                 ← 1 j, « SI invulnérable » se prouve
+Semaine 3   0.5.3 Ollama + logs Loki                ← 2 j, complète le pilier IA/DATA
+            1.1 Bulletproofs                        ← 3-5 j, seule faille crypto
+Semaine 4   §3 objet physique                       ← 1 j, non bloquant
+            Passe finale : §0 + 0.5                 ← obligatoire la veille
 ```
 
-**Si le temps manque** : §0, puis 1.0 (flashage + enrôlement), puis 1.2. Ce sont
-les lignes qui coûtent le moins et qui rapportent le plus : ne pas perdre la
-démo, la consigne additionnelle, l'axe 2.
+**Si le temps manque** : §0, puis 0.5.2 (e2e boutique), puis 0.5.1 (audit
+sécurité). Ce sont les trois lignes qui coûtent le moins et qui rapportent le
+plus : ne pas perdre la démo, prouver que l'achat fonctionne, prouver que le SI
+n'a pas de trou connu.

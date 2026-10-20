@@ -11,6 +11,12 @@ chaîne tourne de bout en bout sous Docker, sans intervention humaine.
 habilitations complètes et bandeau LED ESP8266. Voir
 [`docs/CONSIGNE-ADDITIONNELLE.md`](docs/CONSIGNE-ADDITIONNELLE.md).
 
+**Nouvelles règles du jury (20/10)** : le SI est un **site vitrine de paiement**
+— articles en base, panier, commande, paiement par signature d'anneau,
+historique — avec un back d'administration, un **assistant RAG** local et une
+**ingestion des alertes SIEM** qui déclenche la remédiation sans humain. Voir
+[`TODO.md`](TODO.md) §0.5.
+
 ## Ce qui est réellement opérationnel
 
 | Brique | État | Preuve |
@@ -21,13 +27,15 @@ habilitations complètes et bandeau LED ESP8266. Voir
 | `remediation-engine` | Bus d'états SSE, remédiation asynchrone, verrou, Ansible réel dans l'image | 12 tests |
 | `waf` | Reverse proxy + **déception active** branchée sur le honeypot | 10 tests |
 | `shadow-api` | Honeypot borné, journal d'interception consultable | 4 tests |
-| `auth-service` | Clé JWT lue dans **Vault** (KV v2), fallback explicite sinon | 5 tests |
+| `auth-service` | Clé JWT lue dans **Vault** (KV v2), fallback explicite sinon | 9 tests |
 | `backoffice` | **Authentification visage + mot de passe** (caméra USB du PC hôte), habilitations, bandeau LED ESP8266 | 25 tests + `tools/backoffice_check.py` |
-| `front-dashboard` | 4 quadrants, anneau SVG, pavé PIN, score ML, audit view-only | `npm run build` |
+| `shop-api` | **Boutique** : articles en base, panier, commande, paiement bLSAG, historique | 17 tests, PostgreSQL |
+| `rag-assistant` | **RAG local** : index BM25 construit au build, Ollama optionnel, sources citées | 10 tests |
+| `front-dashboard` | **Vitrine** + 4 quadrants, anneau SVG, pavé PIN, score ML, audit view-only | `npm run build` |
 | `hardware/bridge` | Pont SSE → USB, reconnexion, mode répétition | 9 tests + `--dry-run` |
 | `hardware/ring_signer_hsm` | Firmware ESP32, 5 états, parseur de trame | à flasher |
 | `hardware/led_bandeau_esp8266` | Firmware **ESP8266** (CLion + PlatformIO), LED bicolore pilotée par le back-office | compile (35 % RAM, 28 % flash), à flasher |
-| Observabilité | Prometheus (9 services scrapés, 16 alertes) + Grafana provisionné | `localhost:3001` |
+| Observabilité | Prometheus (11 services scrapés, 20 alertes) + **Alertmanager → remédiation** + Grafana | `localhost:3001` |
 
 **Chaîne P0 mesurée sur Docker** : attaque → détection → remédiation →
 transaction de preuve → déception active en **6,5 à 7,0 s** (limite 90 s,
@@ -51,24 +59,55 @@ Guide complet (Docker, Rust, Python, Node, Vault, dépannage) :
 [`docs/INSTALLATION-LOCAL.md`](docs/INSTALLATION-LOCAL.md).
 
 ```bash
-cp .env.example .env
-docker compose build      # ~6-8 min la première fois (torch, cargo)
+python tools/init_env.py   # génère .env avec des secrets ALÉATOIRES
+docker compose build       # ~6-8 min la première fois (torch, cargo)
 docker compose up -d
-docker compose ps         # 15 services, tous Up / healthy
+docker compose ps          # 18 services, tous Up / healthy
 ```
+
+`tools/init_env.py` est **obligatoire** : il génère `SERVICE_TOKEN`,
+`BO_BOOTSTRAP_TOKEN`, `LED_DEVICE_TOKEN` et `TERMINAL_PIN`. Sans jeton de
+service, les endpoints d'administration sont **fermés** (503) — fail-closed, pas
+de valeur par défaut connue.
 
 | Accès | URL |
 |---|---|
-| Dashboard (derrière l'authentification visage) | http://localhost:5173 |
+| **Boutique (vitrine publique)** | http://localhost:5173 |
+| **Back-office** (supervision, habilitations, administration boutique) | http://localhost:5173 → « Espace back-office » |
+| API boutique | http://localhost:8087 |
+| Assistant RAG | http://localhost:8091/ask |
 | Back-office — API d'authentification | http://localhost:8086 |
 | Grafana (admin / admin au 1er démarrage) | http://localhost:3001 |
-| Prometheus | http://localhost:9090 |
+| Prometheus / Alertmanager | http://localhost:9090 · http://localhost:9093 |
 | API de paiement | http://localhost:8080 |
 | WAF (point d'entrée attaquant) | http://localhost:8085 |
 
+## La boutique (nouvelles règles du jury)
+
+Le SI est un **site vitrine de paiement**, pas seulement un tableau de bord :
+
+* le **catalogue** vient de PostgreSQL (`products`) — six articles au premier
+  démarrage, modifiables par le back ;
+* le **panier** et la **commande** sont persistés ; le stock est réservé dans
+  une transaction puis restitué si le paiement échoue (pas de survente) ;
+* le **paiement** appelle `payment-api /tx/pay` : un output du montant exact
+  est émis puis dépensé par une **signature d'anneau bLSAG**. Aucun prestataire
+  externe, aucun montant simulé ;
+* l'**historique** des achats et des paiements est en base (`orders`,
+  `payments`, `payment_events`), lisible par le client (capability token) et par
+  l'administrateur ;
+* le **back** gère les articles (prix, stock, retrait) et consulte les
+  commandes avec leur preuve de paiement.
+
+```bash
+curl -s localhost:8087/products | python -m json.tool
+curl -s -X POST localhost:8091/ask -H 'Content-Type: application/json' \
+     -d '{"q":"combien de temps prend la reprise ?"}'
+```
+
 ## Authentification du back-office (consigne additionnelle)
 
-Le dashboard est désormais **derrière une authentification à deux facteurs** :
+Le back-office est **derrière une authentification à deux facteurs** :
 identifiant, puis **reconnaissance faciale sur la caméra USB du PC hôte**, puis
 mot de passe. Deux échecs bloquent le compte cinq minutes. Un bandeau LED
 ESP8266 (CLion + PlatformIO) reflète chaque étape : vert clignotant quand le
@@ -76,10 +115,9 @@ visage est reconnu, vert fixe 30 s quand le mot de passe est validé, rouge
 10 flashs s'il est refusé, rouge fixe 30 s si le visage ne correspond pas.
 
 ```bash
-# premier démarrage : enrôler l'administrateur (jeton dans .env)
-#   BO_BOOTSTRAP_TOKEN=<valeur aléatoire>
+# premier démarrage : enrôler l'administrateur (jeton généré dans .env)
 docker compose up -d backoffice front-dashboard
-# ouvrir http://localhost:5173 puis suivre l'écran d'enrôlement
+# ouvrir http://localhost:5173 → « Espace back-office » → écran d'enrôlement
 
 python tools/backoffice_check.py  # contrôle de recette, 0 échec attendu
 ```
@@ -177,9 +215,10 @@ python3 -m venv .venv
 ./tools/run_tests.sh
 ```
 
-**104 tests** : bus d'états et flux d'incident (12), détecteur ML (11), API de
+**141 tests** : bus d'états et flux d'incident (18), détecteur ML (11), API de
 paiement (10), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
-(9), honeypot (4), auth-service (5), **back-office (25)**.
+(9), honeypot (4), auth-service (9), **back-office (25)**, **boutique (17)**,
+**assistant RAG (10)**.
 
 > `run_tests.sh` lance chaque suite **dans le dossier de son service**. C'est
 > volontaire : plusieurs services exposent un `main.py`, et un `pytest services/`

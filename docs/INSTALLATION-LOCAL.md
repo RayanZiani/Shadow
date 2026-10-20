@@ -70,8 +70,7 @@ sudo usermod -aG docker "$USER"   # puis se reconnecter
 
 ```bash
 cd Shadow
-cp .env.example .env          # valeurs de démonstration, aucun secret réel
-
+python tools/init_env.py          # génère .env avec des secrets aléatoires
 docker compose build          # ~6-8 min la première fois (torch, cargo)
 docker compose up -d
 docker compose ps             # tout doit être "Up" / "healthy"
@@ -137,8 +136,11 @@ python3 -m venv .venv
 | shadow-api | `services/shadow-api/test_shadow_api.py` (4) | honeypot : jamais d'erreur visible, journal borné |
 | auth-service | `services/auth-service/test_auth_service.py` (5) | clé lue dans Vault, 503 si Vault muet, cache et rotation |
 | back-office | `services/backoffice/test_backoffice.py` (25) | parcours identifiant → visage → mot de passe, refus, blocage 5 min, LED, habilitations, audit |
+| boutique | `services/shop-api/test_shop_api.py` (17) | catalogue en base, panier, achat, stock réservé puis restitué, historique par capability token, administration |
+| assistant RAG | `services/rag-assistant/test_rag.py` (10) | index BM25 du dossier, question de référence, citations, mode dégradé extractif |
+| ingestion SIEM | `services/remediation-engine/test_alert_ingest.py` (6) | une alerte actionnable ouvre un incident, une alerte de confort non, anti-rebond, jeton |
 
-Soit **104 tests**. Les tests HTTP du noyau se déclarent ignorés si
+Soit **141 tests**. Les tests HTTP du noyau se déclarent ignorés si
 `docker compose` n'est pas démarré. `cargo test` est lancé par `run_tests.sh` si `cargo` est
 présent.
 
@@ -157,7 +159,7 @@ présent.
 | 9 | `python tools/attack.py all` | poison dérouté, replay 409, burst, malformed 400 sans panic |
 | 10 | `python tools/attack.py reset` | `deception: false` |
 | 11 | ouvrir `localhost:3001` | dashboard « RESILIENCE-ALPHA — état du service » avec 10 panneaux |
-| 12 | `curl -s localhost:9090/api/v1/targets` | 9 cibles, toutes `up` |
+| 12 | `curl -s localhost:9090/api/v1/targets` | 11 cibles, toutes `up` |
 | 13 | `python tools/backoffice_check.py` | 0 échec : moteur facial réel, administrateur enrôlé, LED protégée |
 | 14 | parcours visage + mot de passe dans le navigateur | vert clignotant → vert fixe 30 s → dashboard |
 
@@ -211,7 +213,7 @@ mesuré en recette, un trafic parfaitement légitime sortait à +5 σ.
 ## 6. Résultats mesurés sur ce poste (macOS, M3 Pro, 36 Go)
 
 ```
-Docker Compose        15 services, tous Up
+Docker Compose        18 services, tous Up
 Chaîne P0             3 exécutions consécutives : 5,8 s / 6,6 s / 6,7 s
                       (limite 90 s, marge ≈ 83 s)
 Modèle                seuil appris 3,33 ; FPR fenêtre 0,0 % ; rappel 100 %
@@ -220,7 +222,7 @@ Tests                 79 verts (12 + 11 + 10 + 10 + 10 + 9 + 8 + 4 + 5)
                       + 25 back-office = 104 au total
 cargo build --release 2 s (incrémental) / 12 s (à froid)
 npm run build         181 kB de JS, 1,1 s
-Prometheus            9 cibles up, 16 règles d'alerte évaluées
+Prometheus            11 cibles up, 20 règles d'alerte évaluées
 Grafana               dashboard provisionné, 10 panneaux
 Back-office           YuNet + SFace : 29 ms par visage sur CPU, 38 Mo de modèles
 ```

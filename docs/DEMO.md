@@ -87,6 +87,50 @@ bandeau LED la rend lisible à distance sans regarder l'écran.
 
 ---
 
+## 2 bis. La boutique (nouvelles règles du jury)
+
+Le SI n'est plus seulement un tableau de bord : c'est un **site de paiement**.
+La séquence d'achat tient en 25 secondes et se montre avant ou après la chaîne
+P0. Elle prouve trois choses d'un coup : articles en base, paiement réel,
+historique persisté.
+
+| Temps | Action | Ce qu'on voit | Ce qu'on dit |
+|---|---|---|---|
+| 0–8 s | Ouvrir http://localhost:5173 (sans être connecté) | catalogue de 6 articles, stock affiché | « Le front vitrine lit la base : chaque article est un enregistrement, pas une page figée. » |
+| 8–14 s | « Ajouter au panier » sur deux articles | panier, total recalculé | « Le panier est en base, le stock est vérifié à l'ajout. » |
+| 14–20 s | Cliquer **Payer** | commande `paid`, key image affichée | « Le paiement n'est pas simulé : le noyau émet un output du montant exact et le dépense par une signature d'anneau. » |
+| 20–25 s | Recharger la page | l'historique montre la commande | « La commande et sa preuve sont en base. Elles survivent à un redémarrage. » |
+
+Puis, en back-office (identifiant + visage + mot de passe) :
+
+| Action | Ce qu'on voit | Ce qu'on dit |
+|---|---|---|
+| « Habilitations » → « Boutique » | tableau des articles et des commandes | « Le back gère le catalogue et voit la preuve de chaque paiement. » |
+| Modifier le stock, retirer un article | la vitrine se met à jour | « Une seule source de vérité : la base. » |
+
+**Ce qu'il ne faut pas dire** : « c'est une démo ». Le stock est réellement
+décrémenté, la commande est réellement payée, et un paiement refusé produit une
+commande `failed` avec son motif.
+
+**Q&A — « et si le paiement échoue ? »**
+Le stock réservé est restitué dans la même seconde, la commande passe en
+`failed`, le panier est conservé. C'est vérifié par un test
+(`test_le_paiement_refuse_restitue_le_stock`) : pas de stock fantôme.
+
+**Q&A — « comment l'IA agit-elle sur une alerte ? »**
+Prometheus évalue 20 règles, Alertmanager pousse au moteur (`POST /alert`).
+Une alerte **actionnable** ouvre un incident et lance le playbook ; une alerte
+de confort (bandeau LED) est journalisée sans rien déclencher. Le chemin est le
+même que pour le détecteur ML : un seul playbook, une seule preuve de reprise.
+
+**Q&A — « votre assistant invente-t-il ? »**
+Non. Il répond à partir de l'index du dossier et cite ses sources
+(`docs/RAPPORT.md`). Sans Ollama, il passe en mode extractif et le dit :
+`/healthz` → `generation.ollama: unreachable`. Un assistant qui cite vaut mieux
+qu'un assistant qui devine.
+
+---
+
 ## 3. Les quatre attaques disponibles
 
 ```bash
