@@ -26,11 +26,21 @@ chaîne tourne de bout en bout sous Docker, sans intervention humaine.
 transaction de preuve → déception active en **6,5 à 7,0 s** (limite 90 s,
 marge ≈ 83 s), sur trois exécutions consécutives.
 
+## Documentation
+
+| Document | Contenu |
+|---|---|
+| [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Dossier d'ingénierie** : architecture, choix techniques, mesures, limites |
+| [`docs/GOUVERNANCE.md`](docs/GOUVERNANCE.md) | EBIOS RM, PCA/PRA, NIS2, DORA |
+| [`docs/DEMO.md`](docs/DEMO.md) | Runbook de soutenance (3 min, seconde par seconde) |
+| [`docs/INSTALLATION-LOCAL.md`](docs/INSTALLATION-LOCAL.md) | Installation du poste et recette |
+| [`docs/COMPTE-RENDU.md`](docs/COMPTE-RENDU.md) | Journal technique : les 11 défauts trouvés et corrigés |
+| [`TODO.md`](TODO.md) | Ce qui reste à faire, avec critères d'acceptation |
+
 ## Démarrage
 
 Guide complet (Docker, Rust, Python, Node, Vault, dépannage) :
 [`docs/INSTALLATION-LOCAL.md`](docs/INSTALLATION-LOCAL.md).
-Runbook de la soutenance : [`docs/DEMO.md`](docs/DEMO.md).
 
 ```bash
 cp .env.example .env
@@ -150,7 +160,7 @@ paiement (10), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
 - **Recalibrage ML** sur le PC hôte de démonstration (7 min, obligatoire).
 
 Détail complet, avec chiffres et justifications :
-[`docs/COMPTE-RENDU.md`](docs/COMPTE-RENDU.md) et
+[`docs/RAPPORT.md`](docs/RAPPORT.md), [`TODO.md`](TODO.md) et
 [`docs/GOUVERNANCE.md`](docs/GOUVERNANCE.md).
 
 ## Priorités
