@@ -12,7 +12,7 @@
 
 ## 1. Failles trouvées et fermées
 
-Ces cinq points n'étaient pas des « failles de démonstration » : c'étaient des
+Ces sept points n'étaient pas des « failles de démonstration » : c'étaient des
 trous qu'un jury CYBER exploite en quelques minutes, avec `curl`.
 
 | # | Faille | Exploit avant correction | Correction | Test |
@@ -96,7 +96,7 @@ en une commande. L'alerte `JetonServiceNonConfigure` le signale dans Prometheus.
 | O1 | **Pas de TLS** | un attaquant sur le réseau peut lire le trafic | la démonstration est sur `localhost` ; la caméra l'exige (`getUserMedia`) | production : TLS + HSTS |
 | O2 | **Pas de détection de vivacité** faciale | une photo imprimée passe le facteur visage | le mot de passe reste exigé ; publié dans `/healthz` | chantier dédié |
 | O3 | **Pas de Bulletproofs** | un montant négatif modulo l passe l'équilibre | nécessite un attaquant authentifié qui forge ses engagements ; publié dans `/healthz` | `TODO.md` §1.1 |
-| O4 | **Registre d'outputs en mémoire** | perdu au redémarrage | n'affecte pas l'intégrité, seulement la disponibilité | `TODO.md` §1.3 |
+| O4 | ~~Registre d'outputs en mémoire~~ — **fermé** | — | journal PostgreSQL (`registry.py`, 8 tests) | — |
 | O5 | **Blocage 5 min exploitable** en déni de service ciblé | un tiers peut bloquer un compte connu | imposé par la consigne ; déblocage admin + alerte `ComptesBloques` | assumé |
 | O6 | **Pas de WAF générique** (ModSecurity/CRS) | pas de couverture OWASP top-10 générique | les entrées sont validées par Pydantic dans chaque service ; le WAF maison fait de la déception, pas du filtrage | assumé |
 | O7 | **Pas de revue d'accès périodique** | un compte oublié reste actif | journal d'audit + sessions révocables | gouvernance |

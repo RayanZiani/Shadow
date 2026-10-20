@@ -1,6 +1,6 @@
 # TODO — ce qui reste à faire
 
-> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (162 tests verts,
+> État au 20 octobre 2026. Le MVP est fonctionnel et mesuré (164 tests verts,
 > chaîne P0 en 6,6-7,2 s, 19 services `Up`).
 > **Mise à jour du 20/10 (soir)** : les nouvelles règles du jury changent le
 > périmètre — boutique en base, front vitrine, back d'administration, paiement
@@ -25,12 +25,12 @@ changeaient l'architecture :
 | N2 | **Front** qui présente des articles (en base) | **livré** | `GET /products`, catalogue de 6 articles en base |
 | N3 | **Back** qui gère tout cela | **livré** | `front-dashboard/src/shop/AdminShop.jsx` + `/admin/products`, `/admin/orders` |
 | N4 | **Paiement en ligne** avec stockage, **historique** des achats et des paiements | **livré** | `POST /checkout` → `payment-api /tx/pay` (bLSAG) → tables `orders`, `payments`, `payment_events` |
-| N5 | SI **invulnérable**, aucune faille volontaire | **livré (1ʳᵉ passe)** | §0.5.1 : 5 failles réelles fermées. Audit complet reste à faire |
+| N5 | SI **invulnérable**, aucune faille volontaire | **livré (1ʳᵉ passe)** | §0.5.1 : 6 failles réelles fermées (F1-F6) + F7 dans `docs/SECURITE.md` |
 | N6 | **IA** : RAG, surveillance des alertes SIEM, remédiation autonome | **livré (socle)** | `services/rag-assistant`, `POST /alert` + Alertmanager → playbook |
 
 ### 0.5.1 Failles réelles fermées (N5)
 
-Ces cinq points n'étaient pas des « failles de démonstration » : c'étaient des
+Ces six points n'étaient pas des « failles de démonstration » : c'étaient des
 trous qu'un jury CYBER exploite en quelques minutes.
 
 | Faille | Exploit avant correction | Correction |
@@ -76,9 +76,9 @@ trous qu'un jury CYBER exploite en quelques minutes.
   **Acceptation** : une seule commande `paid`, l'autre en `409`, stock jamais
   négatif. (Le code le fait ; il manque la mesure sous charge.)
 
-- [ ] **Migration du registre d'outputs vers PostgreSQL** — L
-  Toujours en mémoire (`payment-api`). Voir §1.3 : c'est la même base, la même
-  transaction, et cela supprime le dernier « redémarrage destructif ».
+- [x] **Migration du registre d'outputs vers PostgreSQL** — fait
+  `services/payment-api/registry.py` (journal PostgreSQL, rechargement au
+  démarrage, 8 tests). Voir §1.3 pour ce qui reste à vérifier sur la pile.
 
 - [ ] **Images produit** — S
   `image_url` existe en base mais aucun fichier n'est servi.
@@ -91,9 +91,9 @@ trous qu'un jury CYBER exploite en quelques minutes.
   **Acceptation** : `/ask` renvoie `engine: ollama:llama3.1:8b` et une réponse
   rédigée citant `docs/RAPPORT.md`.
 
-- [ ] **Brancher les logs (Loki) sur le SIEM** — M
-  Aujourd'hui Alertmanager pousse les **alertes Prometheus**. Les **logs**
-  (`loki`/`promtail`) ne sont toujours pas configurés (§2.2).
+- [x] **Brancher les logs (Loki) sur le SIEM** — fait
+  `loki`/`promtail` configurés, 4 règles de logs poussées à Alertmanager,
+  3 actionnables par le moteur (§2.2). Reste à vérifier dans Grafana Explore.
   **Acceptation** : une erreur de `payment-api` déclenche une alerte Loki →
   Alertmanager → `POST /alert` → playbook.
 
@@ -103,12 +103,11 @@ trous qu'un jury CYBER exploite en quelques minutes.
   **Acceptation** : un incident unique est créé, avec la liste des alertes
   corrélées dans `detail.alerts`.
 
-- [ ] **Scénario de démonstration « attaque sur la boutique »** — M
-  Le jury CYBER attaque le SI : il faut un scénario qui montre l'attaque sur
-  `shop-api` (panier forgé, quantité négative, checkout sans stock, rejeu de
-  paiement), la détection et la remédiation.
-  **Acceptation** : `tools/attack.py shop` → 4 attaques, toutes refusées
-  proprement (400/409), aucune commande créée, service toujours vivant.
+- [x] **Scénario de démonstration « attaque sur la boutique »** — fait
+  `tools/attack_shop.py` : **6 familles** (quantités, panier forgé, injection
+  SQL par SKU, énumération d'historique, course sur le stock, falsification de
+  prix). Mesuré : 6/6 refusées, 0 commande frauduleuse, stock jamais négatif,
+  service debout en 0,8 s.
 
 ---
 
@@ -271,8 +270,8 @@ Reste à vérifier sur la pile démarrée :
 ### 1.4 RAG Ollama — fait (socle)
 
 `services/rag-assistant` (8091) : index **BM25** construit à la construction de
-l'image sur `docs/` + `README.md` + `TODO.md` (13 documents, ~370 passages),
-`POST /ask` avec sources citées, 12 tests.
+l'image sur `docs/` + `README.md` + `TODO.md` (13 documents, 372 passages),
+`POST /ask` avec sources citées, 14 tests.
 
 **Écart assumé** : pas de base vectorielle (Chroma/FAISS) ni de LangChain.
 BM25 donne la même qualité sur un corpus de 13 documents, sans modèle à
@@ -407,9 +406,9 @@ défiler est un argument visuel fort.
 **Acceptation** : les 4 pièces s'emboîtent avec le terminal réel ; le diffuseur
 PETG laisse passer la lumière.
 
-### 3.3 Recette en 6 tests du `hardware/README.md` — S
+### 3.3 Recette en 7 tests du `hardware/README.md` — S
 
-Les 6 tests sont écrits mais n'ont pas été exécutés sur matériel.
+Les 7 tests sont écrits mais n'ont pas été exécutés sur matériel.
 
 ---
 
@@ -419,10 +418,9 @@ Les 6 tests sont écrits mais n'ont pas été exécutés sur matériel.
 |---|---|---|
 | `services/ml-detector/baseline.jsonl` non versionné | propre à chaque poste, reproductible en 7 min | jamais (par conception) |
 | `tools/fake_ansible.py` et `local-dev/crypto_shim.py` | marqués non livrables, utiles pour un poste sans Docker | garder |
-| `loki`/`promtail` sans config | ils démarrent, ne nuisent pas | cf. 2.2 |
 | `ansible.cfg` absent | Ansible fonctionne sans | si on ajoute des rôles |
 | Pas de CI (GitHub Actions) | le projet est un rendu, pas un produit | si le dépôt devient public |
-| Pas de `pre-commit` | 104 tests suffisent | optionnel |
+| Pas de `pre-commit` | 164 tests suffisent | optionnel |
 
 ---
 
@@ -445,13 +443,13 @@ Ne pas perdre de temps dessus, c'est un choix documenté :
 
 ```
 Fait        0.5 nouvelles règles du jury           ← boutique, RAG, SIEM, durcissement
-            (reste : e2e boutique, audit sécurité, Ollama réel, logs Loki)
+            (reste : e2e boutique sur PostgreSQL, Ollama réel)
 Semaine 1   §0 (recalibrage + 3 répétitions)       ← bloquant, 1 h
             0.5.2 e2e boutique + concurrence       ← ½ j, prouve que l'achat marche
             1.2 AppRole Vault                      ← ½ j, gain immédiat en Q&A
-Semaine 2   1.3 registre PostgreSQL                 ← 2 j, supprime un risque de démo
-            0.5.1 audit de sécurité                 ← 1 j, « SI invulnérable » se prouve
-Semaine 3   0.5.3 Ollama + logs Loki                ← 2 j, complète le pilier IA/DATA
+Semaine 2   vérifier le registre sur Docker         ← ½ j, confirme §1.3 en réel
+            0.5.2 e2e boutique sur PostgreSQL       ← ½ j, prouve l'achat en pile
+Semaine 3   0.5.3 Ollama réel sur le PC IA          ← 2 j, complète le pilier IA/DATA
             1.1 Bulletproofs                        ← 3-5 j, seule faille crypto
 Semaine 4   §3 objet physique                       ← 1 j, non bloquant
             Passe finale : §0 + 0.5                 ← obligatoire la veille

@@ -10,7 +10,7 @@ est écrit ici.
 | Port | **8087** |
 | Base | **PostgreSQL** (`db-postgres`, base `shadow_settle`) |
 | Dépend de | `payment-api` (paiement), `backoffice` (sessions admin) |
-| Tests | 17, sur SQLite en mémoire (même SQL, mêmes transactions) |
+| Tests | 21, sur SQLite en mémoire (même SQL, mêmes transactions) |
 
 ---
 

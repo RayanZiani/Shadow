@@ -38,7 +38,7 @@ la preuve de reprise par une transaction réelle plutôt que par un log.*
 ### 2.1 Vue d'ensemble
 
 ```
-   PC Attaquant                     PC Hôte (docker compose, 15 services)
+   PC Attaquant                     PC Hôte (docker compose, 19 services)
    ┌──────────┐
    │ attack.py│──► waf:8085 ──┬──► payment-api:8080 ──► monero-crypto-core:8081
    └──────────┘   (proxy)     │         │                        (Rust)
@@ -185,14 +185,14 @@ Deux briques répondent à « l'IA actualise ses compétences via le RAG » et
 « l'IA gère les alertes des outils de supervision de sorte à agir elle-même ».
 
 **RAG (`services/rag-assistant`, 8091).** Index BM25 construit **à la
-construction de l'image** sur `docs/` et `README.md` : 13 documents, 332
+construction de l'image** sur `docs/`, `README.md` et `TODO.md` : 13 documents, 372
 passages. `POST /ask` renvoie une réponse **avec ses sources**. Si Ollama
 (`llama3.1:8b`) est joignable, il rédige à partir des passages ; sinon le
 service répond en **extractif** — les phrases du dossier, citées — et le dit
 dans `/healthz` (`generation.ollama: unreachable`). Un assistant qui invente
 serait pire qu'un assistant qui cite.
 
-**Ingestion SIEM (`POST /alert`).** Prometheus évalue 20 règles, Alertmanager
+**Ingestion SIEM (`POST /alert`).** Prometheus évalue 24 règles, Alertmanager
 les pousse au moteur de remédiation. Une liste **fermée** d'alertes est
 actionnable (`NoyauCryptoIndisponible`, `SondeTransactionEnEchec`,
 `WafIndisponible`…) ; les alertes de confort (bandeau LED, compte bloqué) sont
@@ -373,7 +373,7 @@ curl -s localhost:8080/audit/last
 | **bLSAG** au lieu de **CLSAG** | signature ~2× plus grosse (linéaire en N) | même modèle de sécurité, optimisation de taille non faite |
 | **Pas de Bulletproofs** | un montant négatif modulo l satisfait `∑C = 0` | **vraie faiblesse**, publiée dans `/healthz` |
 | Pas de mnémonique | les clés sont des scalaires, pas une phrase | hors périmètre démo |
-| Registre en mémoire | perdu au redémarrage | assumé (cf. §7) |
+| Registre PostgreSQL | persistant ; repli mémoire explicite sans `DATABASE_URL` | fermé (§7) |
 
 Ces trois lignes sont dans `GET /healthz` (`not_implemented`) et dans le dossier
 de gouvernance. Un système qui prétend ne pas avoir de limites perd toute
@@ -469,15 +469,15 @@ intervention humaine.
 | `burst` (50 ms d'intervalle) | 40 transactions, 9,7 tx/s, aucune erreur |
 | `malformed` (anneau vide, clés invalides) | **400** propre, service toujours vivant |
 
-### 6.3 Tests automatisés — 162
+### 6.3 Tests automatisés — 164
 
 | Suite | Nombre | Ce qu'elle prouve |
 |---|---|---|
 | `remediation-engine` bus d'états | 7 | `seq` croissant, SSE, abonné lent non bloquant |
 | `remediation-engine` flux d'incident | 5 | ordre des états, verrou, échec explicite |
 | `ml-detector` | 12 | invariance au volume, purge de fenêtre, anti-rebond, réarmement |
-| `payment-api` | 13 |
-| `payment-api` (registre) | **8** | journal PostgreSQL, rechargement, repli explicite, écriture groupée | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés |
+| `payment-api` | 13 | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés |
+| `payment-api` (registre) | **8** | journal PostgreSQL, rechargement, repli explicite, écriture groupée |
 | `monero-crypto-core` (Rust) | 9 | Pedersen homomorphe, chiffrement réversible, anneau valide, falsifications rejetées |
 | `monero-crypto-core` (HTTP) | 10 | émission, dérivation, scan, audit, équilibre, bLSAG, rejeu |
 | `waf` | 10 | âge médian, routage honeypot, **client légitime jamais dérouté** |
@@ -486,7 +486,7 @@ intervention humaine.
 | `auth-service` | 9 | clé Vault, 503 si Vault muet, cache et rotation |
 | `backoffice` | **25** | parcours identifiant → visage → mot de passe, refus et caméra éteinte, blocage 5 min, LED (vert clignotant, vert fixe, rouge ×10, rouge fixe) avec expiration, habilitations, dernier admin protégé, audit sans secret |
 | `shop-api` | **21** | catalogue en base, panier borné, achat, stock réservé puis restitué, survente impossible, historique par capability token, administration |
-| `rag-assistant` | **12** | index BM25, question de référence → bon document, citations, mode dégradé |
+| `rag-assistant` | **14** | index BM25, question de référence → bon document, citations, mode dégradé, disjoncteur Ollama |
 | `remediation-engine` (SIEM) | **8** | alerte actionnable → incident, alerte de confort ignorée, anti-rebond, jeton obligatoire |
 | `ml-detector` (`/ingest`) | **1** | la télémétrie n'est acceptée qu'avec le jeton de service (évasion impossible) |
 | `payment-api` (durcissement) | **3** | anneau borné, administration fermée sans jeton, PIN par défaut refusé |
@@ -520,13 +520,14 @@ détectée est le comportement attendu du système. On alerte sur le silence —
 
 ### 7.2 Opérationnelles
 
-- **Registre des outputs en mémoire** : perdu au redémarrage de `payment-api`.
-  PostgreSQL est présent dans la stack mais n'est pas utilisé pour cela.
+- **Registre des outputs** : persisté dans PostgreSQL (`registry.py`, tables
+  `outputs` et `key_images`), rechargé au démarrage. Repli mémoire explicite
+  si `DATABASE_URL` est absent, publié dans `/healthz`.
 - **AppRole Vault non provisionné** : le playbook utilise un token de service,
   pas un `role_id`/`secret_id` à portée restreinte.
 - **Modèle calibré sur un seul poste** : 1 129 fenêtres capturées ici. Un seuil
   calibré ailleurs produit des faux positifs — c'est arrivé trois fois.
-- **RAG Ollama non commencé** : le pilier IA/DATA est couvert par le ML, pas par
+- **RAG Ollama non branché** : le service RAG est livré (BM25, mode extractif
   l'assistant.
 - **Objet physique non flashé**, modèle 3D v1 non imprimé. Non bloquant par
   conception : l'objet n'est jamais nécessaire.
@@ -606,6 +607,8 @@ Runbook de soutenance :
 | `remediation-engine` | 8084 | `/healthz`, `/metrics`, `/incident`, `/state`, `/state/report`, `/events` (SSE), `/history` |
 | `waf` | 8085 | `/healthz`, `/metrics`, `/admin/{redirect,reset,state}`, proxy `/*` |
 | `shadow-api` | 8090 | `/healthz`, `/metrics`, `/decoys`, `/tx/submit`, `/admin/interceptions` |
+| `shop-api` | 8087 | `/healthz`, `/metrics`, `/products`, `/cart`, `/checkout`, `/orders`, `/admin/{products,orders}` |
+| `rag-assistant` | 8091 | `/healthz`, `/metrics`, `/ask` |
 | `backoffice` | 8086 | `/healthz`, `/metrics`, `/led/state`, `/auth/{bootstrap,identify/start,identify,password,me,logout}`, `/admin/{users,users/{id},users/{id}/face,users/{id}/unlock,audit,sessions,sessions/{id},stats}` |
 
 ## Annexe B — Reproduire les mesures
@@ -631,10 +634,10 @@ python tools/attack.py all
 
 | Élément | Valeur |
 |---|---|
-| Services | 11 (dont 1 en Rust) |
+| Services applicatifs | 11 (dont 1 en Rust) |
 | Conteneurs | 19 |
 | Lignes de code (Python, Rust, JSX, C++, firmware) | ~13 300 |
 | Routes HTTP | ~100 (dont 13 en Rust, 21 back-office, 14 boutique) |
-| Tests automatisés | 162 |
+| Tests automatisés | 164 |
 | Fenêtres d'entraînement | 1 129 |
 | Durée de la chaîne P0 | 6,6 à 7,2 s (limite 90 s) |

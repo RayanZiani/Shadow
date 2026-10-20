@@ -16,7 +16,7 @@
 | Élément | Valeur |
 |---|---|
 | Système étudié | Plateforme de paiement fictive à confidentialité cryptographique |
-| Mode de déploiement | `docker compose`, 15 services, un PC hôte |
+| Mode de déploiement | `docker compose`, 19 services, un PC hôte |
 | Périmètre technique | `services/*`, `front-dashboard`, `ansible/`, `hardware/` |
 | Périmètre organisationnel | Un consortium d'étudiants, un PC attaquant, un PC hôte |
 | Hors périmètre | Monero réel, réseau public, clients réels, données personnelles |
@@ -47,7 +47,7 @@ jour J. L'analyse ci-dessous le reflète.
 |---|---|---|---|
 | BS1 | Noyau cryptographique | `services/monero-crypto-core` (Rust) | — |
 | BS2 | API de paiement | `services/payment-api` (port 8080) | BS1 |
-| BS3 | Registre des outputs | En mémoire dans BS2 | BS2 |
+| BS3 | Registre des outputs | Journal PostgreSQL + cache mémoire | BS2, BS14 |
 | BS4 | Détection ML | `services/ml-detector` (8083) | — |
 | BS5 | Moteur de remédiation | `services/remediation-engine` (8084) | Ansible, BS2 |
 | BS6 | Playbook de remédiation | `ansible/remediation_playbook.yml` | BS5 |
@@ -149,7 +149,7 @@ L'ESP32 est débranché en pleine démonstration.
 
 | Mesure | Implémentation | Preuve |
 |---|---|---|
-| Features calculées par un module unique | `services/ml-detector/features.py` | 11 tests |
+| Features calculées par un module unique | `services/ml-detector/features.py` | 12 tests |
 | Seuil **appris**, jamais codé en dur | `train.py` → `threshold.json` | `threshold_estimators` |
 | Calibration hors échantillon (25 %) | `train.py` | `calibration_set: holdout_25pct` |
 | Anti-rebond 3 fenêtres consécutives | `detector.py` | test dédié |
@@ -162,7 +162,7 @@ L'ESP32 est débranché en pleine démonstration.
 
 | Mesure | Implémentation | Preuve |
 |---|---|---|
-| Signature d'anneau liée (bLSAG) | `monero-crypto-core/src/main.rs` | 8 tests Rust + 10 tests HTTP |
+| Signature d'anneau liée (bLSAG) | `monero-crypto-core/src/main.rs` | 9 tests Rust + 10 tests HTTP |
 | Key image anti-double-dépense | `I = x·H_p(P)`, hash-vers-groupe sans log discret connu | test de forge rejetée |
 | Confidentialité des montants | chiffrement par masque dérivé de l'ECDH | `audit-view` |
 | Audit **view-only** (sans Spend Key) | `GET /audit/last`, `/crypto/audit-view` | test dédié |
@@ -203,7 +203,7 @@ L'ESP32 est débranché en pleine démonstration.
 |---|---|---|---|---|
 | RR1 | **Pas de preuve de domaine (Bulletproofs)** : un montant négatif modulo l passerait la vérification d'équilibre | Faible (attaquant authentifié) | 3 | **Accepté et documenté** (`/healthz` → `not_implemented`) |
 | RR2 | bLSAG au lieu de CLSAG : signature ~2× plus grosse | Certaine | 1 | Accepté (aucun impact fonctionnel) |
-| RR3 | Registre des outputs en mémoire : perte au redémarrage | Certaine | 2 | Accepté pour la démo ; PostgreSQL prévu |
+| RR3 | Registre des outputs en mémoire : perte au redémarrage | **Fermé** | 2 | Journal PostgreSQL (`registry.py`, 8 tests) |
 | RR4 | Modèle ML calibré sur un seul poste | Moyenne | 4 | **Réduit** : `capture_baseline.py` rejouable en 7 min, seuil runtime refusé s'il est périmé |
 | RR5 | AppRole Vault non provisionné | Certaine | 2 | Accepté en démo, écrit dans le playbook |
 | RR6 | Règles WAF limitées à l'âge des leurres | Moyenne | 2 | Accepté : le ML reste le détecteur, le WAF ne fait que filtrer au bord |
@@ -220,7 +220,7 @@ L'ESP32 est débranché en pleine démonstration.
 
 | Service | RTO visé | RPO | Justification |
 |---|---|---|---|
-| `payment-api` | **15 s** | 0 (registre en mémoire, perte acceptée) | C'est le service que la démo doit montrer disponible |
+| `payment-api` | **15 s** | 0 (registre PostgreSQL) | C'est le service que la démo doit montrer disponible |
 | `ml-detector` | **30 s** | n/a (modèle figé dans l'image) | Un redémarrage recharge les artefacts |
 | `remediation-engine` | **10 s** | perte de `/history` | L'état est republié au démarrage (`IDLE`) |
 | `monero-crypto-core` | **10 s** | n/a (stateless) | Aucun état à restaurer |
@@ -239,7 +239,7 @@ automatique. La marge est volontaire : le RTO couvre le cas où la remédiation
 
 | Panne | Détection | Continuité | Reprise |
 |---|---|---|---|
-| `payment-api` tombe | `/healthz` + sonde `auto-probe` (`ok: false`) | Le WAF renvoie 502 explicite | `docker compose up -d payment-api` (registre réinitialisé) |
+| `payment-api` tombe | `/healthz` + sonde `auto-probe` (`ok: false`) | Le WAF renvoie 502 explicite | `docker compose up -d payment-api` (coupure de quelques secondes, registre conservé) |
 | `ml-detector` tombe | `e2e_demo.py` s'arrête au contrôle 1 | **Le paiement continue** (le ML n'est pas dans le chemin critique) | Redémarrage, artefacts rechargés |
 | `remediation-engine` tombe | `/state` injoignable | Détection toujours visible sur `/score` | Redémarrage, `IDLE` republié |
 | `waf` tombe | `/healthz` | Trafic direct sur `payment-api` possible | Redémarrage, `/admin/reset` |
@@ -255,7 +255,7 @@ automatique. La marge est volontaire : le RTO couvre le cas où la remédiation
 | Code et configuration | Git (dépôt distant) | `git clone` sur un poste neuf |
 | Artefacts ML | Reconstruits par `train.py` (déterministe, graine fixe) | `train.py --check` |
 | Secrets | Vault (`vault-data`) ; jamais dans Git | `vault kv get secret/jwt` |
-| Registre des outputs | **Non sauvegardé** (assumé : démo) | n/a |
+| Registre des outputs | PostgreSQL (`outputs`, `key_images`) | `pg-data` |
 | Modèle 3D | `hardware/models/*.scad` (paramétrique) | Réimpression |
 
 ---
@@ -270,7 +270,7 @@ automatique. La marge est volontaire : le RTO couvre le cas où la remédiation
 | 21.2.b — gestion des incidents | Détection ML + remédiation autonome | `e2e_demo.py` |
 | 21.2.c — continuité d'activité | PCA/PRA, RTO par service | §7 |
 | 21.2.d — sécurité de la chaîne d'approvisionnement | Versions figées (`requirements.txt`, `Cargo.lock`) | `--locked` |
-| 21.2.e — sécurité du développement | Tests automatisés (63), revue par la mesure | `tools/run_tests.sh` |
+| 21.2.e — sécurité du développement | Tests automatisés (164), revue par la mesure | `tools/run_tests.sh` |
 | 21.2.f — évaluation de l'efficacité | `validate_real.py`, `analyze_separation.py` | §5.1 |
 | 21.2.g — hygiène et formation | Hors périmètre technique | — |
 | 21.2.h — cryptographie | Ristretto255, bLSAG, Pedersen, View Key séparée | §5.2 |
@@ -309,7 +309,7 @@ formelle (pas d'audit externe), MFA, gestion des tiers, plan de formation.
 |---|---|---|---|
 | 1 | **Bulletproofs** (preuves de domaine) | 3-5 j | Ferme RR1, seule vraie faille cryptographique |
 | 2 | **AppRole Vault** + politique dédiée | 0,5 j | Supprime le token de service du playbook (RR5) |
-| 3 | **Registre persistant** (PostgreSQL déjà présent) | 2 j | Ferme RR3, rend le RPO mesurable |
+| 3 | ~~**Registre persistant**~~ — **fait** | 2 j | Ferme RR3 (`registry.py`, 8 tests) |
 | 4 | Images Docker épinglées par digest + scan Trivy | 0,5 j | Ferme RR7, exigence NIS2 21.2.d |
 | 5 | Recalibrage du ML sur le PC de démonstration | 0,25 j | Ferme RR4 |
 | 6 | MFA sur le terminal (PIN + challenge) | 1 j | NIS2 21.2.j |

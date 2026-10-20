@@ -6,7 +6,7 @@ fonctionner. Aucun n'est appelé par les services en production.
 | Script | Rôle |
 |---|---|
 | `e2e_demo.py` | Répétition générale : attaque → détection → remédiation → preuve, chronométrée |
-| `run_tests.sh` | Lance les 53 tests du dépôt (Python + Rust), avec récapitulatif |
+| `run_tests.sh` | Lance les 164 tests du dépôt (Python + Rust), avec récapitulatif |
 | `fake_ansible.py` | Stub de `ansible-playbook` — **inutile depuis que l'image contient Ansible** |
 
 ## Répétition générale

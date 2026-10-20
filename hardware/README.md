@@ -1,7 +1,7 @@
 # Aspect physique — montage et intégration
 
 Document opérationnel. Le raisonnement et le rôle de l'objet sont dans
-[`docs/hardware/CONCEPT-PHYSIQUE.md`](../../docs/hardware/CONCEPT-PHYSIQUE.md).
+[`docs/hardware/CONCEPT-PHYSIQUE.md`](../docs/hardware/CONCEPT-PHYSIQUE.md).
 
 ## 0. Deux objets distincts
 

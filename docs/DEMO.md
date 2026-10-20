@@ -118,7 +118,7 @@ Le stock réservé est restitué dans la même seconde, la commande passe en
 (`test_le_paiement_refuse_restitue_le_stock`) : pas de stock fantôme.
 
 **Q&A — « comment l'IA agit-elle sur une alerte ? »**
-Prometheus évalue 20 règles, Alertmanager pousse au moteur (`POST /alert`).
+Prometheus évalue 24 règles, Alertmanager pousse au moteur (`POST /alert`).
 Une alerte **actionnable** ouvre un incident et lance le playbook ; une alerte
 de confort (bandeau LED) est journalisée sans rien déclencher. Le chemin est le
 même que pour le détecteur ML : un seul playbook, une seule preuve de reprise.
@@ -258,8 +258,9 @@ ailleurs produit des faux positifs — c'est arrivé trois fois pendant le proje
 | Dashboard figé | `docker compose restart front-dashboard` | « Le dashboard est un miroir, la chaîne continue. » |
 | Plus rien ne répond | `docker compose up -d` puis `python tools/e2e_demo.py` | « Je relance la pile. » |
 
-**Ne jamais** redémarrer `payment-api` en pleine démonstration : le registre
-d'outputs est en mémoire et serait réinitialisé.
+**Éviter** de redémarrer `payment-api` en pleine démonstration : cela coupe le
+service quelques secondes. Le registre d'outputs, lui, est persistant
+(PostgreSQL) : il est rechargé au démarrage.
 
 ---
 

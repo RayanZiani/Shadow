@@ -4,11 +4,11 @@ Ce document décrit l'installation complète du poste de démonstration et la
 procédure de recette. Il est écrit pour **macOS (Apple Silicon)** — le poste qui
 a servi à valider la chaîne — avec les équivalents Linux et Windows.
 
-> Ce qui a été validé sur ce poste : `docker compose up` complet (14 services),
+> Ce qui a été validé sur ce poste : `docker compose up` complet (19 services),
 > noyau Rust compilé avec bLSAG, `tools/e2e_demo.py` trois fois de suite,
-> **79 tests automatisés**, Prometheus et Grafana provisionnés.
+> **164 tests automatisés**, Prometheus, Alertmanager et Grafana provisionnés.
 > Voir §6 pour les chiffres mesurés. Le back-office de la consigne
-> additionnelle ajoute un 15ᵉ service et **25 tests** (§8).
+> additionnelle ajoute un service et **25 tests** (§8).
 
 ---
 
@@ -128,6 +128,7 @@ python3 -m venv .venv
 | remediation-engine | `services/remediation-engine/test_state_bus.py` (7) | contrat d'état, SSE, `seq` croissant, abonné lent non bloquant |
 | remediation-engine | `services/remediation-engine/test_incident_flow.py` (5) | ordre `UNDER_ATTACK → REMEDIATING → RECOVERED_TX`, verrou, échec explicite |
 | ml-detector | `services/ml-detector/test_detector.py` (12) | invariance au volume, médiane des intervalles, sonde exclue, purge de fenêtre, anti-rebond, réarmement |
+| payment-api | `services/payment-api/test_registry.py` (8) | journal PostgreSQL, rechargement au démarrage, repli explicite, écriture groupée |
 | payment-api | `services/payment-api/test_payment_api.py` (13) | leurres gamma, `unspent`, quarantaine des plus anciens, `ring-size`, PIN |
 | hardware | `hardware/bridge/test_hardware_bridge.py` (9) | trame série, états inconnus, mode `--rich`, pont strictement en lecture |
 | monero-crypto-core | `services/monero-crypto-core/src/main.rs` (9) | décodage de point, Pedersen homomorphe, chiffrement réversible, signature d'anneau valide, falsifications rejetées, key image déterministe, dérivation one-time |
@@ -137,10 +138,10 @@ python3 -m venv .venv
 | auth-service | `services/auth-service/test_auth_service.py` (9) | clé lue dans Vault, 503 si Vault muet, cache et rotation |
 | back-office | `services/backoffice/test_backoffice.py` (25) | parcours identifiant → visage → mot de passe, refus, blocage 5 min, LED, habilitations, audit |
 | boutique | `services/shop-api/test_shop_api.py` (21) | catalogue en base, panier, achat, stock réservé puis restitué, historique par capability token, administration |
-| assistant RAG | `services/rag-assistant/test_rag.py` (12) | index BM25 du dossier, question de référence, citations, mode dégradé extractif |
+| assistant RAG | `services/rag-assistant/test_rag.py` (14) | index BM25 du dossier, question de référence, citations, mode dégradé extractif |
 | ingestion SIEM | `services/remediation-engine/test_alert_ingest.py` (8) | une alerte actionnable ouvre un incident, une alerte de confort non, anti-rebond, jeton |
 
-Soit **162 tests**. Les tests HTTP du noyau se déclarent ignorés si
+Soit **164 tests**. Les tests HTTP du noyau se déclarent ignorés si
 `docker compose` n'est pas démarré. `cargo test` est lancé par `run_tests.sh` si `cargo` est
 présent.
 
@@ -218,8 +219,8 @@ Chaîne P0             3 exécutions consécutives : 5,8 s / 6,6 s / 6,7 s
                       (limite 90 s, marge ≈ 83 s)
 Modèle                seuil appris 3,33 ; FPR fenêtre 0,0 % ; rappel 100 %
                       (1 058 fenêtres normales, 1 058 fenêtres d'attaque)
-Tests                 79 verts (12 + 11 + 10 + 10 + 10 + 9 + 8 + 4 + 5)
-                      + 25 back-office = 104 au total
+Tests                 164 verts (Python + Rust, 15 suites)
+                      dont 10 HTTP ignorés sans Docker
 cargo build --release 2 s (incrémental) / 12 s (à froid)
 npm run build         181 kB de JS, 1,1 s
 Prometheus            12 cibles up, 24 règles d'alerte évaluées (+ 4 règles de logs Loki)
@@ -235,8 +236,8 @@ Back-office           YuNet + SFace : 29 ms par visage sur CPU, 38 Mo de modèle
 |---|---|---|
 | AppRole Vault | non provisionné | le playbook utilise `VAULT_TOKEN` (token de service) |
 | Bulletproofs | non implémentées | un montant négatif modulo l passerait la vérification d'équilibre |
-| Registre d'outputs | en mémoire | perdu au redémarrage de `payment-api` |
-| RAG Ollama | non commencé | pilier IA/DATA couvert par le ML seul |
+| Registre d'outputs | **PostgreSQL** (`registry.py`) | rechargé au démarrage ; repli mémoire explicite sans `DATABASE_URL` |
+| RAG Ollama | RAG livré (BM25), Ollama non branché | mode extractif explicite dans `/healthz` |
 | Détection de vivacité (visage) | non implémentée | une photo imprimée passerait (`liveness: not_implemented` dans `/healthz`) |
 | Bandeau LED ESP8266 | firmware écrit, non flashé | l'authentification fonctionne sans lui |
 | Modèle 3D | non imprimé | v1 paramétrique, cotes à mesurer |

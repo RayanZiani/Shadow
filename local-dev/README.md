@@ -1,6 +1,6 @@
 # Lancement local sans Docker (recette)
 
-> **Mode de secours.** La chaîne est désormais validée sous Docker (13 services,
+> **Mode de secours.** La chaîne est désormais validée sous Docker (19 services,
 > Ansible réel, noyau Rust compilé) — voir `docs/INSTALLATION-LOCAL.md`. Ce
 > dossier ne sert qu'à un poste où Docker n'est pas installable : il remplace le
 > noyau Rust par une cryptographie **factice** et Ansible par un stub.

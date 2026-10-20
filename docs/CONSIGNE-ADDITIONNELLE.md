@@ -6,7 +6,7 @@
 >
 > **État** : 16 exigences sur 16 couvertes en logiciel · `services/backoffice`
 > (port 8086, **25 tests verts**) · firmware ESP8266 **compilé** (35,4 % RAM,
-> 28,0 % flash), **reste à flasher sur la carte** · 15ᵉ service, 9ᵉ cible
+> 28,0 % flash), **reste à flasher sur la carte** · service dédié, 12ᵉ cible
 > Prometheus, 5 alertes dédiées.
 
 ---
@@ -66,7 +66,7 @@ physique existant (`docs/hardware/CONCEPT-PHYSIQUE.md` §6).
 | Décision | Alternative écartée | Raison |
 |---|---|---|
 | **YuNet + SFace** (OpenCV) | dlib/face_recognition, InsightFace, DeepFace | 38 Mo, CPU, pas de compilation, pas de PyTorch : l'image reste légère et le build reproductible |
-| **SQLite** pour le back-office | PostgreSQL (déjà dans la stack) | quelques dizaines de lignes, aucune dépendance de démarrage ; le registre des outputs reste un chantier séparé (`TODO.md` §1.3) |
+| **SQLite** pour le back-office | PostgreSQL (déjà dans la stack) | quelques dizaines de lignes, aucune dépendance de démarrage ; le registre des outputs est, lui, persisté dans PostgreSQL (`registry.py`) |
 | **sessions opaques** | JWT | révocation immédiate, aucun secret à distribuer au navigateur |
 | **PBKDF2** | Argon2id, bcrypt | aucune compilation native dans l'image ; 600 000 itérations conformes aux recommandations |
 | **l'ESP interroge** le back-office | le back-office pousse vers l'ESP | le PC hôte est le point d'accès : aucun NAT entrant, aucune IP fixe, aucune règle de pare-feu |

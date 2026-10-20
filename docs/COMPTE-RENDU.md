@@ -10,6 +10,13 @@ Trois sessions :
 3. **Complétion du MVP** — §10 : cryptographie réelle, déception branchée,
    observabilité, gouvernance.
 
+> **Ce document est un journal de sessions, pas un état des lieux.** Les
+> sections §4 à §10 décrivent le système **à la date de leur session** : un
+> « non commencé » ou un « 79 tests » y est exact, à cette date-là.
+> L'état courant est dans [`TODO.md`](../TODO.md) (ce qui reste) et
+> [`docs/RAPPORT.md`](RAPPORT.md) (ce qui est mesuré). Les sections §11 et
+> suivantes décrivent l'état actuel.
+
 ---
 
 ## 1. Résumé exécutif
@@ -26,9 +33,9 @@ marge est de 83 secondes sur l'objectif interne de 90 s.
 | Marge | ≈ 83 s |
 | Faux déclenchements sur trafic normal | **0 %** (0 déclenchement sur 180 fenêtres) |
 | Rappel sur les 4 familles d'attaques | 100 % (1 058 fenêtres d'attaque) |
-| Tests automatisés | **104**, tous verts (Python + Rust) — dont 25 pour le back-office (session 4) |
+| Tests automatisés | **164**, tous verts (Python + Rust) — dont 25 pour le back-office (session 4) |
 | Attaquant dérouté vers le honeypot | **oui** (vérifié par `e2e_demo.py`) |
-| Services Docker | 15, tous `Up` / `healthy` |
+| Services Docker | 19, tous `Up` / `healthy` |
 
 Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 
@@ -127,7 +134,7 @@ Deux sessions distinctes, et c'est la seconde qui compte pour la suite :
 - `hardware/ring_signer_hsm/ring_signer_hsm.ino` : **3 bugs corrigés**,
   parseur de trame, servo piloté sur changement d'état uniquement.
 - `hardware/models/socle_terminal.scad` : modèle paramétrique (4 pièces).
-- `hardware/README.md` : câblage, impression, recette en 6 tests.
+- `hardware/README.md` : câblage, impression, recette en 7 tests.
 
 ### 2.6 Outils de recette (`tools/`, `local-dev/`)
 
@@ -440,10 +447,14 @@ Mais l'**AppRole** n'est pas provisionné : en démonstration, le playbook utili
 restreinte. C'est un cran en dessous de ce que demanderait la production, et
 c'est écrit dans le playbook.
 
-### 6.5 RAG : non commencé
+### 6.5 RAG : non commencé *(à cette date — livré depuis, voir §11.3)*
 
 Le pilier IA/DATA est couvert par la détection ML, pas par l'assistant RAG
 (Ollama + LangChain). C'est le seul pilier partiellement traité.
+
+> **Depuis** : `services/rag-assistant` livre l'assistant (index BM25 construit
+> au build, 14 tests, quadrant dans le dashboard). Seul le branchement d'Ollama
+> sur le PC IA reste à faire — le service répond en mode extractif en attendant.
 
 ### 6.6 Le modèle 3D n'a pas été imprimé
 
@@ -782,7 +793,7 @@ habilitations, et un ESP8266 à LED bicolore connecté au point d'accès.
 | Page de connexion | `front-dashboard/src/auth/` | identifiant → caméra → mot de passe, miroir de la LED à l'écran |
 | Habilitations | `AdminPanel.jsx` | comptes, rôles, visages, déblocage, sessions, audit |
 | Bandeau LED | `hardware/led_bandeau_esp8266/` | PlatformIO (CLion), C++, interrogation 300 ms |
-| Observabilité | `prometheus.yml`, `alert.rules.yml` | 9ᵉ cible, 5 alertes dédiées |
+| Observabilité | `prometheus.yml`, `alert.rules.yml`, `loki.yml` | 12ᵉ cible, 24 alertes + 4 règles de logs, Alertmanager → remédiation |
 | Recette | `tools/backoffice_check.py` | 6 contrôles, code de sortie 0 |
 
 ### 11.2 Les trois décisions qui ont demandé un arbitrage

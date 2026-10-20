@@ -21,16 +21,16 @@ historique — avec un back d'administration, un **assistant RAG** local et une
 
 | Brique | État | Preuve |
 |---|---|---|
-| `monero-crypto-core` | **bLSAG réel**, key image anti-double-dépense, engagements de Pedersen, audit view-only | 8 tests Rust + 10 tests HTTP |
-| `payment-api` | Registre d'outputs chiffrés, leurres gamma, anti-double-dépense, PIN, sonde | `tools/e2e_demo.py`, 10 tests |
-| `ml-detector` | Modèle entraîné sur capture réelle, seuil appris, anti-rebond, diagnostic | `threshold.json`, 11 tests |
+| `monero-crypto-core` | **bLSAG réel**, key image anti-double-dépense, engagements de Pedersen, audit view-only | 9 tests Rust + 10 tests HTTP |
+| `payment-api` | Registre d'outputs chiffrés, leurres gamma, anti-double-dépense, PIN, sonde | `tools/e2e_demo.py`, 13 tests + 8 registre |
+| `ml-detector` | Modèle entraîné sur capture réelle, seuil appris, anti-rebond, diagnostic | `threshold.json`, 12 tests |
 | `remediation-engine` | Bus d'états SSE, remédiation asynchrone, verrou, Ansible réel dans l'image | 12 tests |
 | `waf` | Reverse proxy + **déception active** branchée sur le honeypot | 10 tests |
 | `shadow-api` | Honeypot borné, journal d'interception consultable | 4 tests |
 | `auth-service` | Clé JWT lue dans **Vault** (KV v2), fallback explicite sinon | 9 tests |
 | `backoffice` | **Authentification visage + mot de passe** (caméra USB du PC hôte), habilitations, bandeau LED ESP8266 | 25 tests + `tools/backoffice_check.py` |
-| `shop-api` | **Boutique** : articles en base, panier, commande, paiement bLSAG, historique | 17 tests, PostgreSQL |
-| `rag-assistant` | **RAG local** : index BM25 construit au build, Ollama optionnel, sources citées | 10 tests |
+| `shop-api` | **Boutique** : articles en base, panier, commande, paiement bLSAG, historique | 21 tests, PostgreSQL |
+| `rag-assistant` | **RAG local** : index BM25 construit au build, Ollama optionnel, sources citées | 14 tests |
 | `front-dashboard` | **Vitrine** + 4 quadrants, anneau SVG, pavé PIN, score ML, audit view-only | `npm run build` |
 | `hardware/bridge` | Pont SSE → USB, reconnexion, mode répétition | 9 tests + `--dry-run` |
 | `hardware/ring_signer_hsm` | Firmware ESP32, 5 états, parseur de trame | à flasher |
@@ -75,6 +75,11 @@ de valeur par défaut connue.
 | **Boutique (vitrine publique)** | http://localhost:5173 |
 | **Back-office** (supervision, habilitations, administration boutique) | http://localhost:5173 → « Espace back-office » |
 | API boutique | http://localhost:8087 |
+| Noyau cryptographique | http://localhost:8081 |
+| Détecteur ML | http://localhost:8083 |
+| Moteur de remédiation | http://localhost:8084 |
+| Honeypot (shadow-api) | http://localhost:8090 |
+| Loki (logs) | http://localhost:3100 |
 | Assistant RAG | http://localhost:8091/ask |
 | Back-office — API d'authentification | http://localhost:8086 |
 | Grafana (admin / admin au 1er démarrage) | http://localhost:3001 |
@@ -224,10 +229,10 @@ python3 -m venv .venv
 ./tools/run_tests.sh
 ```
 
-**162 tests** : bus d'états, incident et SIEM (20), détecteur ML (12), API de
-paiement (13), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
-(9), honeypot (4), auth-service (9), **back-office (25)**, **boutique (21)**,
-**assistant RAG (12)**.
+**164 tests** : bus d'états, incident et SIEM (20), détecteur ML (12), API de
+paiement (13 + **8 registre**), noyau Rust unitaire (9) et HTTP (10), WAF (10),
+pont hardware (9), honeypot (4), auth-service (9), **back-office (25)**,
+**boutique (21)**, **assistant RAG (14)**.
 
 > `run_tests.sh` lance chaque suite **dans le dossier de son service**. C'est
 > volontaire : plusieurs services exposent un `main.py`, et un `pytest services/`
@@ -238,8 +243,10 @@ paiement (13), noyau Rust unitaire (8) et HTTP (10), WAF (10), pont hardware
 - **Bulletproofs** (preuves de domaine) : seule vraie faille cryptographique
   restante. Priorité 1 du dossier de gouvernance.
 - **AppRole Vault** : le playbook utilise aujourd'hui un token de service.
-- **Registre persistant** : les outputs sont en mémoire (perdus au redémarrage).
-- **RAG Ollama** : non commencé (pilier IA/DATA partiel).
+- **Registre persistant** : fait (journal PostgreSQL, 8 tests) ; reste à
+  vérifier le redémarrage réel sur la pile Docker (`TODO.md` §1.3).
+- **RAG Ollama** : service RAG livré (BM25, 14 tests, quadrant dans le
+  dashboard) ; reste à brancher Ollama sur le PC IA.
 - **Objet physique** : firmware à flasher, modèle 3D v1 jamais imprimé.
 - **Bandeau LED ESP8266** : firmware écrit et compilé, à flasher sur la carte.
 - **Détection de vivacité** du visage : non implémentée, publiée dans `/healthz`.
