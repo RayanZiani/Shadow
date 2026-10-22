@@ -161,7 +161,7 @@ services:
       VAULT_TOKEN: ${VAULT_TOKEN:-}
       JWT_SIGNING_KEY_CACHE: ${JWT_SIGNING_KEY_CACHE:-dev-only-placeholder-rotate-me}
     depends_on: [vault]
-    ports: ["8082:8082"]
+    ports: ["8092:8082"]
     networks: [shadow-net]
 
   payment-api:

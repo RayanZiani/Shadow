@@ -365,7 +365,9 @@ export default function Storefront({ user, onLogin, onSupervision, onAdmin, onLo
       try {
         const payload = await shop.checkout(cartToken, customerRef, customer);
         setLastOrder(payload);
-        setCart({ token: cartToken, items: [], total: "0.00 €", count: 0 });
+        localStorage.removeItem(CART_KEY);
+        setCartToken(null);
+        setCart({ token: null, items: [], total: "0.00 €", count: 0 });
         await loadOrders();
       } catch (shopError) {
         // 502 = paiement refusé : la commande existe en base, en échec.

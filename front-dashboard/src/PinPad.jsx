@@ -3,15 +3,9 @@ import { useState } from "react";
 /**
  * Pavé numérique du terminal (surface d'attaque physique).
  *
- * Pourquoi il est dans le dashboard et non dans le firmware : le clavier du
- * terminal ne parle pas à l'ESP32 (cf. docs/hardware/README.md, option A). Un
- * pavé USB ou ce pavé à l'écran produit exactement les mêmes observations pour
- * le ML (`pin_failure_ratio`, `inter_arrival_median`) sans démonter le
- * terminal la veille de la soutenance.
- *
- * Ce que ce composant ne peut PAS faire : déclencher une remédiation. Un PIN
- * correct autorise seulement une transaction de démonstration, qui passe par
- * /tx/submit comme n'importe quel client.
+ * Simule le clavier du terminal physique de caisse (TPE).
+ * Un code valide exécute une transaction bLSAG réelle.
+ * Des codes erronés répétés génèrent des échecs qui alimentent le modèle ML.
  */
 export default function PinPad({ apiBase, onTransaction }) {
   const [digits, setDigits] = useState("");
@@ -21,6 +15,12 @@ export default function PinPad({ apiBase, onTransaction }) {
   const press = (digit) => {
     if (digits.length >= 4) return;
     setDigits(digits + digit);
+    setMessage(null);
+  };
+
+  const autoFillDemo = () => {
+    // PIN de démonstration par défaut généré dans .env
+    setDigits("5771");
     setMessage(null);
   };
 
@@ -34,7 +34,7 @@ export default function PinPad({ apiBase, onTransaction }) {
         body: JSON.stringify({ pin: digits, amount: 1 }),
       });
       if (!response.ok) {
-        setMessage({ ok: false, text: "CODE REFUSÉ" });
+        setMessage({ ok: false, text: "CODE REFUSÉ — Signal envoyé au ML" });
         setDigits("");
         return;
       }
@@ -63,59 +63,79 @@ export default function PinPad({ apiBase, onTransaction }) {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-center gap-2 mb-2">
+    <div className="flex flex-col items-center">
+      {/* 4 cercles de saisie du PIN */}
+      <div className="flex items-center justify-center gap-3 my-2">
         {[0, 1, 2, 3].map((index) => (
           <span
             key={index}
-            className="w-4 h-4 rounded-full border-2 border-ink"
-            style={{ backgroundColor: digits.length > index ? "#261E48" : "transparent" }}
+            className={`w-5 h-5 rounded-full border-2 transition-all ${
+              digits.length > index
+                ? "bg-ink border-ink scale-110 shadow-sm"
+                : "border-ink/40 bg-page/50"
+            }`}
           />
         ))}
       </div>
-      <div className="grid grid-cols-3 gap-1.5">
+
+      {/* Grille du pavé */}
+      <div className="grid grid-cols-3 gap-2 w-full max-w-[240px] my-1">
         {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => (
           <button
             key={digit}
             onClick={() => press(String(digit))}
-            className="bg-page text-ink font-bold rounded py-1.5 text-sm hover:bg-white"
+            className="bg-white/90 hover:bg-white text-ink text-base font-bold rounded-lg py-2 transition shadow-sm border border-rule/30 active:scale-95"
           >
             {digit}
           </button>
         ))}
         <button
-          onClick={() => setDigits("")}
-          className="bg-page text-ink/70 font-bold rounded py-1.5 text-xs hover:bg-white"
+          onClick={() => {
+            setDigits("");
+            setMessage(null);
+          }}
+          title="Effacer"
+          className="bg-white/60 hover:bg-white text-ink/70 font-bold rounded-lg py-2 text-xs transition border border-rule/30 active:scale-95"
         >
           C
         </button>
         <button
           onClick={() => press("0")}
-          className="bg-page text-ink font-bold rounded py-1.5 text-sm hover:bg-white"
+          className="bg-white/90 hover:bg-white text-ink text-base font-bold rounded-lg py-2 transition shadow-sm border border-rule/30 active:scale-95"
         >
           0
         </button>
         <button
           onClick={submit}
           disabled={digits.length !== 4 || busy}
-          className="bg-ink text-white font-bold rounded py-1.5 text-xs disabled:opacity-40"
+          className="bg-ink hover:bg-ink/90 text-white font-bold rounded-lg py-2 text-xs transition shadow-sm disabled:opacity-40 active:scale-95"
         >
-          OK
+          {busy ? "…" : "OK"}
         </button>
       </div>
+
+      {/* Message de résultat */}
       {message && (
-        <p
-          className={`mt-2 text-center text-xs font-bold ${
-            message.ok ? "text-emerald" : "text-crimson"
+        <div
+          className={`mt-2 px-3 py-1 rounded-md text-xs font-bold text-center w-full max-w-[240px] ${
+            message.ok ? "bg-emerald/20 text-emerald border border-emerald/40" : "bg-crimson/20 text-crimson border border-crimson/40"
           }`}
         >
           {message.text}
-        </p>
+        </div>
       )}
-      <p className="mt-2 text-center text-ink/50 text-[11px]">
-        code du terminal : voir <code>TERMINAL_PIN</code> dans <code>.env</code> ·
-        un refus alimente le ML
-      </p>
+
+      {/* Aide et raccourci démo */}
+      <div className="mt-3 flex items-center justify-between w-full max-w-[240px] text-[11px] text-ink/65">
+        <span>PIN démo : <strong className="text-ink font-mono">5771</strong></span>
+        <button
+          type="button"
+          onClick={autoFillDemo}
+          className="text-ink font-semibold underline hover:text-ink/90"
+        >
+          Insérer 5771
+        </button>
+      </div>
     </div>
   );
 }

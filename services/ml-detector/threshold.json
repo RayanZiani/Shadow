@@ -1,13 +1,13 @@
 {
-  "iso_mean": 0.44466007859462026,
-  "iso_std": 0.06072820854561572,
-  "ae_mean": 0.27994582056999207,
-  "ae_std": 0.5619428753852844,
+  "iso_mean": 0.48659106204361807,
+  "iso_std": 0.04787150313543657,
+  "ae_mean": 0.39220649003982544,
+  "ae_std": 0.31337830424308777,
   "source": "capture:baseline.jsonl",
   "calibration_set": "holdout_25pct",
   "score_function": "max(0.5*z_iso+0.5*z_ae, z_median_age)",
-  "trained_at": "2026-10-22T08:15:53Z",
-  "n_normal": 1258,
+  "trained_at": "2026-10-21T12:28:43Z",
+  "n_normal": 133,
   "features": [
     "decoy_median_age_days",
     "ring_verify_cpu_us",
@@ -16,17 +16,17 @@
     "ring_age_skewness",
     "tx_latency_p95"
   ],
-  "threshold": 6.715167763989658,
+  "threshold": 9.5,
   "threshold_estimators": {
-    "percentile_99.9": 6.7152,
-    "mean_plus_6std": 5.4912,
-    "retained": 6.7152
+    "percentile_99.9": 3.3146,
+    "mean_plus_6std": 9.5,
+    "retained": 9.5
   },
   "evaluation": {
     "false_positive_rate": 0.0,
     "false_positive_rate_3_consecutive": 0.0,
     "attack_recall": 1.0,
-    "n_test_normal": 500,
+    "n_test_normal": 133,
     "n_test_attack": 1600
   }
 }

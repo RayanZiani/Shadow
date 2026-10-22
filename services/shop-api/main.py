@@ -499,7 +499,11 @@ def create_app(database_url: str | None = None, static_dir: str | None = None) -
                     "UPDATE cart_items SET quantity = ? WHERE id = ?",
                     (quantity, existing["id"]),
                 )
-            db.tx_run(conn, "UPDATE carts SET updated_at = ? WHERE id = ?", (now, cart["id"]))
+            db.tx_run(
+                conn,
+                "UPDATE carts SET checked_out_at = NULL, updated_at = ? WHERE id = ?",
+                (now, cart["id"]),
+            )
         return {"cart": cart_payload(cart_or_404(token))}
 
     @app.patch("/cart/{token}/items/{product_id}")
@@ -688,6 +692,7 @@ def create_app(database_url: str | None = None, static_dir: str | None = None) -
                     ),
                 )
                 db.tx_run(conn, "DELETE FROM cart_items WHERE cart_id = ?", (cart["id"],))
+                db.tx_run(conn, "UPDATE carts SET checked_out_at = NULL WHERE id = ?", (cart["id"],))
             LOG.info("commande %s payée (%d centimes)", reference, total)
             return {
                 "order": _order_payload(db, reference),

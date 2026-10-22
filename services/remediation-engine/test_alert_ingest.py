@@ -500,3 +500,34 @@ def test_une_alerte_non_actionnable_reste_ignoree_pendant_lincident(
     assert corps["details"][0]["reason"] == "non_actionnable", corps
     assert len(alertes) == 1, alertes
     assert appels == ["crypto_unavailable"], appels
+
+
+def test_alertmanager_root_fingerprint_et_bearer_auth(stub_incident):
+    """Couvre le format réel Alertmanager : fingerprint à la racine et Bearer token."""
+    async def scenario():
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            payload = {
+                "status": "firing",
+                "alerts": [
+                    {
+                        "status": "firing",
+                        "fingerprint": "alertmanager-fp-12345",
+                        "labels": {"alertname": "NoyauCryptoIndisponible", "severity": "critical"},
+                        "annotations": {"summary": "Alerte avec fingerprint racine"},
+                    }
+                ],
+            }
+            response = await client.post(
+                "/alert",
+                json=payload,
+                headers={"Authorization": "Bearer jeton-de-test"},
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["acted"] == 1
+            assert data["details"][0]["fingerprint"] == "alertmanager-fp-12345"
+
+    asyncio.run(scenario())
+    assert stub_incident == ["crypto_unavailable"]
+

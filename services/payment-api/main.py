@@ -217,12 +217,15 @@ async def _crypto(path: str, payload: dict, timeout: float = 5.0) -> dict:
     # Le noyau a répondu (même par une erreur) : il est joignable.
     CRYPTO_STATUS["ready"] = True
     if response.status_code >= 400:
+        if response.status_code >= 500:
+            CRYPTO_STATUS["ready"] = False
         CRYPTO_STATUS["last_error"] = f"{path} -> {response.status_code}: {response.text[:200]}"
         # Une 4xx du noyau est une faute du CLIENT (anneau malformé, clé
         # invalide) : la propager en 400, pas en 502. Une 5xx est une panne du
         # noyau, donc une passerelle en erreur.
         status = 400 if response.status_code < 500 else 502
         raise HTTPException(status_code=status, detail=f"noyau crypto: {response.text[:200]}")
+    CRYPTO_STATUS["ready"] = True
     CRYPTO_STATUS["last_error"] = None
     return response.json()
 

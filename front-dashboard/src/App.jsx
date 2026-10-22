@@ -37,11 +37,28 @@ function StatusBadge({ state }) {
   );
 }
 
-function Card({ title, children, className = "" }) {
+function Card({ title, kicker, badge, legend, children, className = "" }) {
   return (
-    <div className={`bg-card rounded-xl p-5 h-full ${className}`}>
-      <h2 className="text-ink font-bold mb-3">{title}</h2>
-      {children}
+    <div className={`bg-card rounded-xl p-5 shadow-sm border border-rule/50 flex flex-col justify-between ${className}`}>
+      <div>
+        <div className="flex items-start justify-between gap-2 mb-1.5">
+          <div>
+            {kicker && (
+              <p className="text-[10px] font-bold uppercase tracking-wider text-ink/70 mb-0.5">
+                {kicker}
+              </p>
+            )}
+            <h2 className="text-ink font-bold text-base md:text-lg leading-tight">{title}</h2>
+          </div>
+          {badge}
+        </div>
+        {legend && (
+          <p className="text-ink/80 text-xs mb-3.5 leading-relaxed bg-white/40 rounded-lg p-2.5 border border-rule/30">
+            {legend}
+          </p>
+        )}
+        {children}
+      </div>
     </div>
   );
 }
@@ -325,20 +342,82 @@ function LedRing({ state, seq }) {
     }
   };
 
+  const isCurrent = (st) => state === st;
+
   return (
-    <svg viewBox="0 0 200 200" className="w-full max-w-[220px] mx-auto" role="img">
-      <circle cx="100" cy="100" r="86" fill="none" stroke="#A1A6D4" strokeWidth="1" />
-      {Array.from({ length: count }, (_, i) => {
-        const angle = (i / count) * 2 * Math.PI - Math.PI / 2;
-        const cx = 100 + 72 * Math.cos(angle);
-        const cy = 100 + 72 * Math.sin(angle);
-        return <circle key={i} cx={cx} cy={cy} r="9" fill={colorFor(i)} />;
-      })}
-    </svg>
+    <div>
+      <svg viewBox="0 0 200 200" className="w-full max-w-[190px] mx-auto drop-shadow-sm" role="img">
+        <circle cx="100" cy="100" r="86" fill="none" stroke="#8A8FC0" strokeWidth="1" strokeDasharray="3 3" />
+        {Array.from({ length: count }, (_, i) => {
+          const angle = (i / count) * 2 * Math.PI - Math.PI / 2;
+          const cx = 100 + 72 * Math.cos(angle);
+          const cy = 100 + 72 * Math.sin(angle);
+          return <circle key={i} cx={cx} cy={cy} r="9" fill={colorFor(i)} />;
+        })}
+      </svg>
+
+      {/* Légende complète et interactive des 4 états de l'anneau */}
+      <div className="mt-3 pt-3 border-t border-rule/30">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-ink/70 mb-2 text-center">
+          Légende des états lumineux (Miroir ESP32 / LED)
+        </p>
+        <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+          <div
+            className={`p-1.5 rounded-lg flex items-center gap-2 border transition ${
+              isCurrent("NORMAL_TX")
+                ? "bg-white border-ink shadow-sm font-bold text-ink"
+                : "bg-white/30 border-transparent text-ink/75"
+            }`}
+          >
+            <span className="w-3 h-3 rounded-full bg-[#003cc8] shrink-0 shadow-sm" />
+            <span className="truncate"><strong>Bleu</strong> : Nominal</span>
+          </div>
+          <div
+            className={`p-1.5 rounded-lg flex items-center gap-2 border transition ${
+              isCurrent("UNDER_ATTACK")
+                ? "bg-white border-crimson shadow-sm font-bold text-crimson"
+                : "bg-white/30 border-transparent text-ink/75"
+            }`}
+          >
+            <span className="w-3 h-3 rounded-full bg-[#dc0000] shrink-0 shadow-sm animate-pulse" />
+            <span className="truncate"><strong>Rouge</strong> : Attaque</span>
+          </div>
+          <div
+            className={`p-1.5 rounded-lg flex items-center gap-2 border transition ${
+              isCurrent("REMEDIATING")
+                ? "bg-white border-amber-600 shadow-sm font-bold text-amber-700"
+                : "bg-white/30 border-transparent text-ink/75"
+            }`}
+          >
+            <span className="w-3 h-3 rounded-full bg-[#ff8c00] shrink-0 shadow-sm" />
+            <span className="truncate"><strong>Orange</strong> : Remédiation</span>
+          </div>
+          <div
+            className={`p-1.5 rounded-lg flex items-center gap-2 border transition ${
+              isCurrent("RECOVERED_TX")
+                ? "bg-white border-emerald shadow-sm font-bold text-emerald"
+                : "bg-white/30 border-transparent text-ink/75"
+            }`}
+          >
+            <span className="w-3 h-3 rounded-full bg-[#0f9d63] shrink-0 shadow-sm" />
+            <span className="truncate"><strong>Vert</strong> : Rétabli</span>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
-function Supervision({ user, onLogout, onOpenAdmin }) {
+const FEATURE_META = {
+  decoy_median_age_days: { label: "Âge médian leurres", unit: "j", highlight: true },
+  ring_age_skewness: { label: "Asymétrie anneau (skewness)", unit: "" },
+  ring_verify_cpu_us: { label: "CPU vérif. anneau", unit: "µs" },
+  inter_arrival_median: { label: "Médiane intervalle inter-tx", unit: "s" },
+  tx_latency_p95: { label: "Latence p95", unit: "ms" },
+  key_image_rejection_ratio: { label: "Taux rejets PIN / rejeu", unit: "%" },
+};
+
+function Supervision({ user, onLogout, onOpenAdmin, onOpenShopAdmin, onOpenStorefront }) {
   const [probeStatus, setProbeStatus] = useState(null);
   const [systemState, setSystemState] = useState({ seq: 0, state: "IDLE", detail: {} });
   const [ml, setMl] = useState(null);
@@ -351,12 +430,6 @@ function Supervision({ user, onLogout, onOpenAdmin }) {
 
   // 1. État du système : SSE depuis remediation-engine (une seule vérité,
   //    partagée avec le terminal physique).
-  //
-  //    Au (re)connect, on relit `/state` : le flux SSE ne rejoue pas le dernier
-  //    état. Sans cette relecture, un dashboard ouvert APRÈS un changement
-  //    (cas de la page protégée par l'authentification) resterait sur « INIT »
-  //    alors que le système est en NORMAL_TX ou en REMEDIATING. Le pont
-  //    hardware fait exactement la même chose.
   useEffect(() => {
     const source = new EventSource(`${REMEDIATION_BASE}/events`);
 
@@ -457,165 +530,356 @@ function Supervision({ user, onLogout, onOpenAdmin }) {
   const detail = systemState.detail || {};
 
   return (
-    <div className="min-h-screen bg-page p-6">
-      <header className="flex items-center justify-between mb-6 gap-4">
-        <div>
-          <h1 className="text-ink text-2xl font-bold">RESILIENCE-ALPHA — SHADOW-SETTLE</h1>
-          <p className="text-ink/70 text-sm">
-            {style.text} · flux {connected ? "connecté" : "interrompu"} · seq {systemState.seq}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {user && (
-            <span className="text-ink/70 text-xs">
-              {user.username} · {user.role}
-            </span>
-          )}
-          {onOpenAdmin && (
-            <button
-              onClick={onOpenAdmin}
-              className="bg-white text-ink text-xs font-bold rounded-lg px-3 py-1.5 border border-rule"
-            >
-              Habilitations
-            </button>
-          )}
-          {onLogout && (
-            <button
-              onClick={onLogout}
-              className="bg-ink text-white text-xs font-bold rounded-lg px-3 py-1.5"
-            >
-              Déconnexion
-            </button>
-          )}
-          <span className={`text-xs font-bold ${connected ? "text-emerald" : "text-crimson"}`}>
-            {connected ? "SSE OK" : "SSE KO"}
-          </span>
-          <StatusBadge state={systemState.state} />
+    <div className="min-h-screen bg-page p-4 md:p-6 pb-20 font-montserrat">
+      {/* En-tête officiel du Back-office avec navigation et statut en direct */}
+      <header className="bg-card/70 border border-rule/50 rounded-2xl p-4 md:p-5 mb-6 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-ink text-white px-2 py-0.5 rounded">
+                Back-office sécurisé 2FA
+              </span>
+              <span className="text-[10px] font-bold text-ink/70">
+                seq #{systemState.seq} · flux {connected ? "SSE connecté" : "reconnexion…"}
+              </span>
+            </div>
+            <h1 className="text-ink text-xl md:text-2xl font-black tracking-tight">
+              RESILIENCE-ALPHA — SUPERVISION & WAR ROOM
+            </h1>
+            <p className="text-ink/75 text-xs mt-0.5">
+              {style.text} · Détection d'anomalies ML, remédiation autonome SOAR et conformité DORA.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Grand badge d'état lisible à distance pour la soutenance */}
+            <div className="scale-105">
+              <StatusBadge state={systemState.state} />
+            </div>
+
+            {/* Profil connecté */}
+            {user && (
+              <span className="bg-white/80 border border-rule/30 text-ink text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm">
+                👤 {user.username} <span className="opacity-60 text-[10px]">({user.role})</span>
+              </span>
+            )}
+
+            {/* Onglets rapides de navigation */}
+            {onOpenAdmin && (
+              <button
+                onClick={onOpenAdmin}
+                className="bg-white hover:bg-white/90 text-ink text-xs font-bold rounded-lg px-3 py-1.5 border border-rule shadow-sm transition active:scale-95"
+              >
+                Habilitations (2FA)
+              </button>
+            )}
+            {onOpenShopAdmin && (
+              <button
+                onClick={onOpenShopAdmin}
+                className="bg-white hover:bg-white/90 text-ink text-xs font-bold rounded-lg px-3 py-1.5 border border-rule shadow-sm transition active:scale-95"
+              >
+                Admin Boutique
+              </button>
+            )}
+            {onOpenStorefront && (
+              <button
+                onClick={onOpenStorefront}
+                className="bg-white hover:bg-white/90 text-ink text-xs font-bold rounded-lg px-3 py-1.5 border border-rule shadow-sm transition active:scale-95"
+              >
+                Vitrine publique
+              </button>
+            )}
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                className="bg-ink hover:bg-ink/90 text-white text-xs font-bold rounded-lg px-3 py-1.5 shadow-sm transition active:scale-95"
+              >
+                Déconnexion
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Les 4 quadrants exigés pour le Clip Chrono, lisibles à distance */}
+      {/* Grille principale des 4 quadrants P0 + Console DORA + Assistant RAG */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <Card title="Flux transactionnel">
-          <p className="text-ink text-sm italic">
-            Dernière sonde :{" "}
-            {probeStatus?.last_run
-              ? new Date(probeStatus.last_run * 1000).toLocaleTimeString()
-              : "…"}
-          </p>
-          <p className={`mt-2 text-lg font-bold ${probeStatus?.ok ? "text-emerald" : "text-crimson"}`}>
-            {probeStatus?.unreachable
-              ? "API INJOIGNABLE"
-              : probeStatus?.ok
-                ? "TX DE PREUVE : OK"
-                : "TX DE PREUVE : ECHEC"}
-          </p>
-          {detail.key_image && (
-            <p className="mt-1 text-ink/60 text-xs font-mono break-all">
-              key image {detail.key_image.slice(0, 24)}…
-            </p>
-          )}
-        </Card>
-
-        <Card title="Radar machine learning">
-          {ml ? (
-            <>
-              <div className="flex items-baseline gap-3">
-                <p
-                  className="text-4xl font-bold tabular-nums"
-                  style={{ color: ml.is_anomaly ? "#c8102e" : "#0f9d63" }}
-                >
-                  {typeof ml.score === "number" ? ml.score.toFixed(2) : "—"}
-                </p>
-                <p className="text-ink/70 text-sm">
-                  seuil {typeof ml.threshold === "number" ? ml.threshold.toFixed(2) : "—"}
+        
+        {/* QUADRANT 1 : FLUX TRANSACTIONNEL & SONDE DE VIVACITÉ */}
+        <Card
+          kicker="PILIER CRYPTO · PREUVE DE VIE"
+          title="Flux transactionnel & Vivacité"
+          badge={
+            <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${probeStatus?.ok ? "bg-emerald/20 text-emerald border border-emerald/40" : "bg-crimson/20 text-crimson border border-crimson/40"}`}>
+              {probeStatus?.ok ? "SONDE ACTIVE (4s)" : "SONDE EN PANNE"}
+            </span>
+          }
+          legend="Un robot en arrière-plan émet et dépense une transaction légitime toutes les 4s pour garantir en direct la vivacité du noyau Rust et alimenter le ML en données de référence."
+        >
+          <div className="space-y-3 mt-1">
+            <div className="p-3 bg-white/50 rounded-xl border border-rule/30 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-ink/60">Dernière transaction de sonde</p>
+                <p className="text-sm font-bold text-ink">
+                  {probeStatus?.last_run
+                    ? new Date(probeStatus.last_run * 1000).toLocaleTimeString()
+                    : "En attente du premier cycle…"}
                 </p>
               </div>
-              <p className="text-ink/70 text-xs mt-1">
-                {ml.model === "ready"
-                  ? `fenêtre ${ml.streak ?? 0}/${ml.streak_required ?? 3} · score appris, sans seuil fixe`
-                  : `modèle : ${ml.model}`}
-              </p>
+              <div className="text-right">
+                <span className={`text-xs font-black px-2.5 py-1 rounded-lg ${probeStatus?.ok ? "bg-emerald text-white" : "bg-crimson text-white"}`}>
+                  {probeStatus?.unreachable ? "API INJOIGNABLE" : probeStatus?.ok ? "TX DE PREUVE : OK" : "TX DE PREUVE : ECHEC"}
+                </span>
+              </div>
+            </div>
+
+            {detail.key_image ? (
+              <div className="p-3 bg-white/40 rounded-xl border border-rule/30">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-ink/65 mb-1">
+                  Key Image (Empreinte anti-double-dépense)
+                </p>
+                <p className="font-mono text-xs text-ink break-all bg-white/70 p-2 rounded-lg border border-rule/20 select-all">
+                  {detail.key_image}
+                </p>
+              </div>
+            ) : (
+              <div className="p-3 bg-white/30 rounded-xl border border-rule/20 text-xs text-ink/60 italic text-center">
+                Key image enregistrée dans le registre d'outputs
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {/* QUADRANT 2 : RADAR MACHINE LEARNING */}
+        <Card
+          kicker="PILIER IA · DÉTECTION D'ANOMALIES"
+          title="Radar Machine Learning"
+          badge={
+            <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${ml?.is_anomaly ? "bg-crimson text-white animate-pulse" : "bg-white text-ink border border-rule/30"}`}>
+              {ml?.is_anomaly ? "ANOMALIE CONFIRMÉE" : "MODÈLE PRÊT"}
+            </span>
+          }
+          legend="Surveillance continue sur 6 features physiques sans seuil codé en dur. Un score anormal pendant 3 fenêtres consécutives déclenche automatiquement l'incident."
+        >
+          {ml ? (
+            <div className="space-y-3 mt-1">
+              <div className="p-3 bg-white/50 rounded-xl border border-rule/30">
+                <div className="flex items-baseline justify-between mb-1">
+                  <div>
+                    <span className="text-3xl font-black tabular-nums tracking-tight" style={{ color: ml.is_anomaly ? "#c8102e" : "#0f9d63" }}>
+                      {typeof ml.score === "number" ? ml.score.toFixed(2) : "—"}
+                    </span>
+                    <span className="text-ink/60 text-xs ml-2 font-semibold">
+                      / seuil appris {typeof ml.threshold === "number" ? ml.threshold.toFixed(2) : "9.50"}
+                    </span>
+                  </div>
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${ml.is_anomaly ? "bg-crimson/15 text-crimson" : "bg-emerald/15 text-emerald"}`}>
+                    {ml.is_anomaly ? "DÉPASSEMENT" : "NOMINAL"}
+                  </span>
+                </div>
+
+                {/* Barre de jauge du score ML */}
+                <div className="w-full bg-white/80 rounded-full h-2.5 overflow-hidden border border-rule/30 my-2">
+                  <div
+                    className={`h-full transition-all duration-500 rounded-full ${ml.is_anomaly ? "bg-crimson" : "bg-emerald"}`}
+                    style={{
+                      width: `${Math.min(100, Math.max(5, ((ml.score ?? 0) / (ml.threshold ?? 9.5)) * 100))}%`
+                    }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-ink/75 pt-1">
+                  <span>Anti-rebond (streak) :</span>
+                  <strong className="font-mono bg-white/80 px-2 py-0.5 rounded border border-rule/20">
+                    {ml.streak ?? 0} / {ml.streak_required ?? 3} fenêtres consécutives
+                  </strong>
+                </div>
+              </div>
+
+              {/* Grille des 6 features physiques */}
               {ml.features && (
-                <ul className="text-ink/60 text-[11px] font-mono mt-2 grid grid-cols-2 gap-x-3">
-                  {Object.entries(ml.features).map(([name, value]) => (
-                    <li key={name} className="truncate">
-                      {name.replace(/_/g, " ")} : {typeof value === "number" ? value.toFixed(2) : value}
-                    </li>
-                  ))}
-                </ul>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  {Object.entries(ml.features).map(([key, val]) => {
+                    const meta = FEATURE_META[key] || { label: key.replace(/_/g, " "), unit: "" };
+                    const formatted = typeof val === "number" ? val.toFixed(2) : val;
+                    return (
+                      <div
+                        key={key}
+                        className={`p-2 rounded-lg border flex flex-col justify-between ${
+                          meta.highlight
+                            ? "bg-white/80 border-ink/40 shadow-xs"
+                            : "bg-white/40 border-rule/25"
+                        }`}
+                      >
+                        <span className="text-[10px] text-ink/70 font-semibold truncate leading-tight">
+                          {meta.label}
+                        </span>
+                        <span className="text-xs font-mono font-bold text-ink mt-0.5">
+                          {formatted} {meta.unit}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
-            </>
+            </div>
           ) : (
-            <p className="text-crimson text-sm font-bold">DETECTEUR INJOIGNABLE</p>
+            <div className="p-4 bg-crimson/10 border border-crimson/30 rounded-xl text-crimson font-bold text-xs text-center">
+              DÉTECTEUR MACHINE LEARNING INJOIGNABLE (port 8083)
+            </div>
           )}
         </Card>
 
-        <Card title="Anneau & état du terminal">
+        {/* QUADRANT 3 : ANNEAU & ÉTAT DU TERMINAL MATÉRIEL */}
+        <Card
+          kicker="PILIER MATÉRIEL · ESP32 / LED"
+          title="Anneau & État du terminal"
+          badge={
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-white text-ink border border-rule/30">
+              Miroir physique 24 LEDs
+            </span>
+          }
+          legend="Miroir exact de l'anneau de LEDs présent sur le boîtier physique (ESP32 et bandeau bicolore ESP8266). Si le boîtier est débranché, l'animation garantit une soutenance 100% démontrable."
+        >
           <LedRing state={systemState.state} seq={systemState.seq} />
-          <p className="text-center text-ink/60 text-xs mt-2">
-            miroir de l'objet physique · même état, même séquence
-          </p>
         </Card>
 
-        <Card title="Terminal — saisie du code">
+        {/* QUADRANT 4 : TERMINAL PHYSIQUE (SAISIE DU CODE PIN) */}
+        <Card
+          kicker="PILIER CYBER · SURFACE D'ATTAQUE PHYSIQUE"
+          title="Terminal physique — Saisie du PIN"
+          badge={
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-white text-ink border border-rule/30">
+              PIN Démo : 5771
+            </span>
+          }
+          legend="Simulateur du clavier du terminal physique de caisse. Un code PIN valide déclenche une transaction réelle bLSAG. Des refus répétés simulent une attaque par force brute et alertent le ML."
+        >
           <PinPad apiBase={API_BASE} />
+
           {pinStats && (
-            <p className="mt-2 text-center text-ink/60 text-[11px]">
-              {pinStats.failures}/{pinStats.attempts} refus sur {pinStats.window_seconds} s
+            <div className="mt-3 p-2 bg-white/40 rounded-lg border border-rule/25 text-center text-[11px] text-ink/75">
+              <span>Refus enregistrés : </span>
+              <strong className="font-mono text-ink">
+                {pinStats.failures} / {pinStats.attempts} sur {pinStats.window_seconds}s
+              </strong>
               {pinStats.failures > 0 && (
-                <span className="text-crimson font-bold">
-                  {" "}
-                  · taux {(pinStats.failure_ratio * 100).toFixed(0)} %
+                <span className="text-crimson font-bold ml-2">
+                  (taux {(pinStats.failure_ratio * 100).toFixed(0)}%)
                 </span>
               )}
-            </p>
+            </div>
           )}
         </Card>
 
-        {/* Cinquième quadrant : l'IA/DATA n'apparaissait qu'en `curl`. */}
-        <Card title="Assistant RAG — dossier technique" className="md:col-span-2">
-          <div id="assistant-rag">
+        {/* QUADRANT 5 : CONSOLE DE REMÉDIATION AUTONOME SOAR & AUDIT DORA (ART. 19) */}
+        <Card
+          kicker="PILIER INFRA & GOUVERNANCE SOAR"
+          title="Console de remédiation SOAR & Audit DORA (art. 19)"
+          badge={
+            <span className={`text-xs font-bold px-3 py-1 rounded-full ${
+              systemState.state === "REMEDIATING"
+                ? "bg-amber-500 text-white animate-pulse"
+                : systemState.state === "RECOVERED_TX"
+                  ? "bg-emerald text-white"
+                  : "bg-white text-ink border border-rule/40"
+            }`}>
+              {systemState.state === "REMEDIATING"
+                ? "REMEDIATION EN COURS"
+                : systemState.state === "RECOVERED_TX"
+                  ? "REPRISE VALIDEE"
+                  : "EN ATTENTE D'INCIDENT"}
+            </span>
+          }
+          legend="Réponse à incident 100% autonome sans humain : le moteur lance un playbook Ansible qui reconfigure le WAF et déroute l'attaquant vers le honeypot. La View Key permet à l'auditeur externe de déchiffrer les transactions sans risque de vol."
+          className="md:col-span-2"
+        >
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 mt-2">
+            
+            {/* Colonne gauche : Playbook Ansible */}
+            <div className="lg:col-span-7 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-ink font-bold text-sm">Sortie du Playbook Ansible</p>
+                  {detail.duration_seconds !== undefined && (
+                    <span className="text-emerald font-bold text-xs bg-emerald/15 px-2 py-0.5 rounded border border-emerald/30">
+                      Durée : {detail.duration_seconds.toFixed(1)} s
+                    </span>
+                  )}
+                </div>
+                <p className="text-ink/75 text-xs mb-2">
+                  {systemState.state === "REMEDIATING"
+                    ? "Exécution asynchrone du playbook de remédiation sans intervention humaine…"
+                    : systemState.state === "RECOVERED_TX"
+                      ? `Reprise en ${detail.duration_seconds?.toFixed(1) ?? "?"} s (marge < 90s respectée)`
+                      : "Prêt : le playbook se déclenche automatiquement à la première alerte."}
+                </p>
+              </div>
+              <AnsibleConsole state={systemState.state} detail={detail} />
+            </div>
+
+            {/* Colonne droite : Audit View-Only DORA */}
+            <div className="lg:col-span-5 bg-white/70 rounded-xl p-4 border border-rule/40 flex flex-col justify-between shadow-xs">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-ink/70">
+                    DORA ART. 19 & NIS2
+                  </span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-ink/10 text-ink">
+                    Audit View-Only
+                  </span>
+                </div>
+                <h3 className="text-ink font-bold text-sm mb-1.5">
+                  Contrôle réglementaire sans Spend Key
+                </h3>
+                <p className="text-ink/75 text-[11px] leading-relaxed mb-3">
+                  L'auditeur bancaire détient <strong>uniquement la View Key</strong> : il déchiffre les montants réels en base mais ne possède <strong>aucun pouvoir de signature</strong> (aucun risque de vol de fonds).
+                </p>
+
+                {audit?.available ? (
+                  <div className="bg-page/70 rounded-lg p-3 border border-rule/30 space-y-2">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-ink/60">Dernier montant déchiffré :</span>
+                      <p className="text-2xl font-black text-ink tabular-nums">
+                        {audit.amount} centimes <span className="text-sm font-semibold text-ink/70">({(audit.amount / 100).toFixed(2)} €)</span>
+                      </p>
+                    </div>
+                    <div className="text-[11px] font-mono text-ink/80 space-y-1 pt-1.5 border-t border-rule/20">
+                      <p className="truncate"><strong>Output :</strong> {audit.output_id}</p>
+                      <p><strong>Anneau bLSAG :</strong> {audit.ring_size} clés (1 réelle + 10 leurres)</p>
+                      <p className="truncate"><strong>Key Image :</strong> {String(audit.key_image).slice(0, 16)}…</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-page/50 rounded-lg p-3 text-center text-xs text-ink/60 border border-rule/30">
+                    {audit?.reason ?? "En attente d'une transaction confirmée…"}
+                  </div>
+                )}
+              </div>
+
+              <p className="text-ink/50 text-[10px] mt-3 italic text-center">
+                ⚡ Données actualisées en direct par la sonde de vivacité (toutes les 4s)
+              </p>
+            </div>
+          </div>
+        </Card>
+
+        {/* QUADRANT 6 : ASSISTANT RAG TECHNIQUE LOCAL */}
+        <Card
+          kicker="PILIER IA · DOCUMENTATION TECHNIQUE"
+          title="Assistant RAG — dossier technique"
+          badge={
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-white text-ink border border-rule/30">
+              BM25 + Ollama local
+            </span>
+          }
+          legend="Interroge l'ensemble du dossier technique, des rapports EBIOS RM et des règles du jury en langage naturel, avec citation rigoureuse des sources et mode dégradé automatique si Ollama est éteint."
+          className="md:col-span-2"
+        >
+          <div id="assistant-rag" className="mt-1">
             <RagAssistant />
           </div>
         </Card>
 
-        <Card title="Console de remédiation & conformité DORA">
-          <p className="text-ink text-sm">
-            {systemState.state === "REMEDIATING"
-              ? "Playbook Ansible en cours…"
-              : systemState.state === "RECOVERED_TX"
-                ? `Reprise en ${detail.duration_seconds?.toFixed(1) ?? "?"} s`
-                : "Aucune remédiation en cours"}
-          </p>
-          {detail.ansible_rc !== undefined && (
-            <p className="text-ink/60 text-xs font-mono mt-1">ansible rc={detail.ansible_rc}</p>
-          )}
-          <AnsibleConsole state={systemState.state} detail={detail} />
-          <div className="mt-3 pt-3 border-t border-rule">
-            <p className="text-ink/70 text-xs font-bold uppercase tracking-wide">
-              Audit view-only (DORA art. 19)
-            </p>
-            {audit?.available ? (
-              <>
-                <p className="text-ink text-lg font-bold tabular-nums">
-                  montant {audit.amount}
-                </p>
-                <p className="text-ink/60 text-[11px] font-mono break-all">
-                  {audit.output_id} · anneau {audit.ring_size} · key image{" "}
-                  {String(audit.key_image).slice(0, 12)}…
-                </p>
-                <p className="text-ink/50 text-[11px] mt-1">
-                  déchiffré sans la Spend Key : aucune capacité de signature
-                </p>
-              </>
-            ) : (
-              <p className="text-ink/50 text-xs">
-                {audit?.reason ?? "en attente d'une transaction confirmée"}
-              </p>
-            )}
-          </div>
-        </Card>
       </div>
     </div>
   );
@@ -804,6 +1068,8 @@ export default function App() {
         user={user}
         onLogout={logout}
         onOpenAdmin={user.role === "admin" ? () => setView("admin") : undefined}
+        onOpenShopAdmin={() => setView("shop-admin")}
+        onOpenStorefront={() => setView("shop")}
       />
     );
   } else {

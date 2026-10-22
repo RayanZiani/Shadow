@@ -379,7 +379,7 @@ async def handle_alert(payload: AlertmanagerPayload):
         annotations = alert.get("annotations") or {}
         name = str(labels.get("alertname", ""))
         status = str(alert.get("status", payload.status))
-        fingerprint = str(labels.get("fingerprint") or f"{name}:{status}")
+        fingerprint = str(alert.get("fingerprint") or labels.get("fingerprint") or f"{name}:{status}")
 
         entry = {
             "alertname": name,
