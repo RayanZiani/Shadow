@@ -372,7 +372,12 @@ OLLAMA_BREAKER_SECONDS = 30.0
 # fermé avant qu'une seule ne l'ait tripé, et N appels bloquants partaient —
 # de quoi saturer le threadpool et faire échouer le healthcheck Docker.
 _breaker_lock = threading.Lock()
-_breaker = {"down_until": 0.0, "last_error": None, "probing": False}
+_breaker = {
+    "down_until": 0.0,
+    "last_error": None,
+    "probing": False,
+    "last_success": 0.0,
+}
 
 
 def ollama_available(cfg: dict) -> bool:
@@ -401,6 +406,7 @@ def _release_probe(error: str | None) -> None:
         _breaker["probing"] = False
         if error is None:
             _breaker["last_error"] = None
+            _breaker["last_success"] = time.time()
         else:
             _breaker["down_until"] = time.time() + OLLAMA_BREAKER_SECONDS
             _breaker["last_error"] = error
@@ -462,11 +468,18 @@ def ollama_config() -> dict:
 
 
 def ollama_health(cfg: dict) -> dict:
-    """État pour `/healthz`, sans bloquer : lit le disjoncteur, pas le réseau."""
+    """État pour `/healthz`, sans bloquer : lit le disjoncteur, pas le réseau.
+
+    `reachable` n'est annoncé qu'après une génération **réussie** dans les
+    10 dernières minutes : c'est une preuve, pas une supposition. Sans appel
+    récent, l'état est `unknown` — honnête, et suffisant pour la recette
+    (`/ask` fait foi).
+    """
     with _breaker_lock:
         down_until = _breaker["down_until"]
         last_error = _breaker["last_error"]
         probing = _breaker["probing"]
+        last_success = _breaker["last_success"]
     now = time.time()
     if now < down_until:
         return {
@@ -474,6 +487,8 @@ def ollama_health(cfg: dict) -> dict:
             "last_error": last_error,
             "retry_in_seconds": round(down_until - now, 1),
         }
+    if last_success and now - last_success < 600:
+        return {"state": "reachable", "last_error": None, "retry_in_seconds": 0.0}
     return {
         "state": "probing" if probing else "unknown",
         "last_error": last_error,

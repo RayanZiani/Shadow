@@ -1,7 +1,7 @@
 # TODO — ce qui reste à faire
 
 > État au **20 octobre 2026, soir** (fin de la journée 2 sur 5). Le MVP est
-> fonctionnel et mesuré : **219 tests** (195 pytest verts sur ce poste, 5
+> fonctionnel et mesuré : **221 tests** (197 pytest verts sur ce poste, 5
 > scénarios, 9 unitaires Rust, 10 HTTP), chaîne P0 en 6,6 / 7,1 / 7,2 s,
 > 19 services.
 > **Plan des trois jours restants** : [`docs/PLAN-TRAITE-FINALE.md`](docs/PLAN-TRAITE-FINALE.md).
@@ -361,11 +361,11 @@ Reste à vérifier sur la pile démarrée :
 ### 1.4 RAG Ollama — fait (socle)
 
 `services/rag-assistant` (8091) : index **BM25** construit à la construction de
-l'image sur `docs/` + `README.md` + `TODO.md` (14 documents, 597 passages),
+l'image sur `docs/` + `README.md` + `TODO.md` (18 documents, ~710 passages),
 `POST /ask` avec sources citées, 14 tests.
 
 **Écart assumé** : pas de base vectorielle (Chroma/FAISS) ni de LangChain.
-BM25 donne la même qualité sur un corpus de 14 documents, sans modèle à
+BM25 donne la même qualité sur un corpus de 18 documents, sans modèle à
 télécharger au build ni dépendance lourde. C'est écrit dans
 `services/rag-assistant/rag.py`.
 
@@ -519,7 +519,7 @@ Les 7 tests sont écrits mais n'ont pas été exécutés sur matériel.
 | `tools/fake_ansible.py` et `local-dev/crypto_shim.py` | marqués non livrables, utiles pour un poste sans Docker | garder |
 | `ansible.cfg` absent | Ansible fonctionne sans | si on ajoute des rôles |
 | Pas de CI (GitHub Actions) | le projet est un rendu, pas un produit | si le dépôt devient public |
-| Pas de `pre-commit` | 219 tests suffisent | optionnel |
+| Pas de `pre-commit` | 221 tests suffisent | optionnel |
 
 ---
 

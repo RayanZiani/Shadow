@@ -207,8 +207,15 @@ async def _crypto(path: str, payload: dict, timeout: float = 5.0) -> dict:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(f"{CRYPTO_CORE_URL}{path}", json=payload)
     except httpx.HTTPError as exc:
+        # Le noyau ne répond pas : on le SAIT maintenant. Sans cette ligne,
+        # `/healthz` continuait d'annoncer `crypto_core: ready` jusqu'au
+        # prochain passage de la sonde (4 s), et `tools/chaos.py` lisait un
+        # état périmé juste après l'arrêt du noyau.
+        CRYPTO_STATUS["ready"] = False
         CRYPTO_STATUS["last_error"] = f"{type(exc).__name__}: {exc}"
         raise HTTPException(status_code=503, detail=f"noyau crypto injoignable ({path})") from exc
+    # Le noyau a répondu (même par une erreur) : il est joignable.
+    CRYPTO_STATUS["ready"] = True
     if response.status_code >= 400:
         CRYPTO_STATUS["last_error"] = f"{path} -> {response.status_code}: {response.text[:200]}"
         # Une 4xx du noyau est une faute du CLIENT (anneau malformé, clé

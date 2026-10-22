@@ -184,6 +184,36 @@ def test_le_siem_exige_le_jeton_de_service():
 
     asyncio.run(scenario())
 
+def test_alertmanager_peut_pousser_en_bearer(stub_incident):
+    """Alertmanager ne sait pas poser `X-Service-Token` : il envoie un Bearer.
+
+    Le champ `http_config.headers` n'existe dans aucune version d'Alertmanager :
+    le conteneur refusait de démarrer (`field headers not found`). La config
+    utilise donc `authorization: Bearer <SERVICE_TOKEN>`, et le moteur doit
+    l'accepter — sinon la chaîne « alerte SIEM → remédiation » est morte, ce qui
+    est exactement le défaut F12 que ce fichier est censé prévenir.
+    """
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test"
+        ) as client:
+            mauvais = await client.post(
+                "/alert",
+                json=_alert("WafIndisponible"),
+                headers={"Authorization": "Bearer pas-le-bon-jeton"},
+            )
+            assert mauvais.status_code == 401
+
+            bon = await client.post(
+                "/alert",
+                json=_alert("WafIndisponible"),
+                headers={"Authorization": "Bearer jeton-de-test"},
+            )
+            assert bon.status_code == 200
+            assert bon.json()["acted"] == 1
+
+    asyncio.run(scenario())
+
 
 def test_le_journal_des_alertes_est_consultable(stub_incident):
     async def scenario():

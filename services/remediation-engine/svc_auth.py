@@ -31,8 +31,21 @@ def service_token_configured() -> bool:
     return bool(os.environ.get("SERVICE_TOKEN", "").strip())
 
 
-def require_service_token(x_service_token: str | None = Header(default=None)) -> None:
-    """Dépendance FastAPI : refuse tout appel sans le jeton de service."""
+def require_service_token(
+    x_service_token: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> None:
+    """Dépendance FastAPI : refuse tout appel sans le jeton de service.
+
+    Deux formes sont acceptées, pour deux appelants réels :
+
+    - `X-Service-Token: <jeton>` — les outils de recette (`tools/attack.py`,
+      `e2e_demo.py`) et les autres services ;
+    - `Authorization: Bearer <jeton>` — **Alertmanager**, qui ne sait pas poser
+      d'en-tête arbitraire dans un `webhook_config` (le champ `http_config.
+      headers` n'existe dans aucune version : le conteneur refusait de démarrer).
+      `authorization` est le mécanisme supporté, d'où ce second chemin.
+    """
     expected = os.environ.get("SERVICE_TOKEN", "").strip()
     if not expected:
         # Fail-closed : pas de jeton configuré = pas d'administration possible.
@@ -44,10 +57,15 @@ def require_service_token(x_service_token: str | None = Header(default=None)) ->
                 "(python tools/init_env.py)."
             ),
         )
+    presented = (x_service_token or "").strip()
+    if not presented and authorization:
+        scheme, _, credentials = authorization.strip().partition(" ")
+        if scheme.lower() == "bearer":
+            presented = credentials.strip()
     # `.encode()` : `compare_digest` sur des `str` lève TypeError dès qu'un
     # caractère est non-ASCII (un en-tête peut en contenir). Comparer des
     # octets reste à temps constant et ne produit jamais de 500.
-    if not x_service_token or not hmac.compare_digest(
-        x_service_token.encode(), expected.encode()
+    if not presented or not hmac.compare_digest(
+        presented.encode(), expected.encode()
     ):
         raise HTTPException(status_code=401, detail="jeton de service invalide")

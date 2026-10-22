@@ -4,6 +4,7 @@ L'attaquant continue de taper sur un faux nœud et ne reçoit jamais de 403 :
 il voit des Canary Key Images, et chaque appel est loggé pour le SIEM.
 """
 import logging
+import os
 import random
 import time
 from collections import deque

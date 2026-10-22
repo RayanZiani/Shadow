@@ -10,9 +10,9 @@
 > ouvert**. Une limite écrite ne coûte pas de point ; une limite découverte en
 > Q&A en coûte.
 >
-> **Chiffres** : **219 tests** (195 pytest + 5 script + 9 Rust + 10 HTTP) ·
-> **19 services** · chaîne P0 **6,6 / 7,1 / 7,2 s** · RAG **14 documents /
-> 597 passages** · bundle dashboard **206,82 kB** · **PIN généré**, jamais une
+> **Chiffres** : **221 tests** (197 pytest + 5 script + 9 Rust + 10 HTTP) ·
+> **19 services** · chaîne P0 **6,6 / 7,1 / 7,2 s** · RAG **18 documents /
+> ~710 passages** · bundle dashboard **206,82 kB** · **PIN généré**, jamais une
 > constante publique.
 
 ---
@@ -338,7 +338,7 @@ C'est vérifiable ; « invulnérable » ne l'est pas.
 **RAG (`services/rag-assistant`, 8091).**
 
 - Index **BM25** construit à la construction de l'image sur `docs/`,
-  `README.md` et `TODO.md` : **14 documents, 597 passages** pour l'image de
+  `README.md` et `TODO.md` : **18 documents, ~710 passages** pour l'image de
   démonstration (`/healthz` fait foi après un rebuild).
 - `POST /ask` renvoie une réponse **avec ses sources** (fichier, section, score)
   et le **moteur** utilisé : `extractive` ou `ollama:<modèle>`.
@@ -382,7 +382,7 @@ C'est vérifiable ; « invulnérable » ne l'est pas.
 ```powershell
 # 1. RAG : index et réponse sourcée
 curl.exe -s http://localhost:8091/healthz
-# attendu : 14 documents, 597 passages, generation.ollama reachable|unreachable
+# attendu : "documents": 18, "chunks" ~710, generation.ollama reachable
 
 $q = @{ q = "comment le stock est-il réservé ?" } | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri http://localhost:8091/ask `
@@ -457,7 +457,7 @@ déterministe. Le playbook est le même que celui du détecteur ML.
 | « Le PIN est-il une valeur publique ? » | non : il est généré et transmis par `.env` ; `preflight.py` vérifie qu'il arrive au conteneur | `test_le_pin_par_defaut_ne_fonctionne_plus` |
 | « Votre IA invente-t-elle ? » | elle cite ses sources ; sans Ollama, elle passe en extractif et le dit | `test_le_mode_extractif_cite_ses_sources` |
 | « Une alerte déclenche-t-elle vraiment ? » | oui : `PaiementRefuse` → `/alert` → même playbook que le ML | `test_une_alerte_actionnable_ouvre_un_incident` |
-| « Combien de tests ? » | 219 : 195 pytest, 5 script, 9 Rust, 10 HTTP | `.\tools\run_tests.ps1` |
+| « Combien de tests ? » | 221 : 197 pytest, 5 script, 9 Rust, 10 HTTP | `.\tools\run_tests.ps1` |
 | « Pourquoi pas Prestashop ? » | le SI est écrit ici : modèle de données, surface d'attaque et preuve maîtrisés ; pas de CMS à durcir | `services/shop-api/README.md` |
 | « Pourquoi le firmware n'est pas flashé ? » | il compile (35,4 % RAM, 28,0 % flash) ; le flash et le rendu LED restent à prouver sur la carte | `docs/CONSIGNE-ADDITIONNELLE.md` §1 |
 | « Qu'est-ce qui reste ouvert ? » | TLS, vivacité, Bulletproofs, AppRole, PostgreSQL mono-nœud, Ollama | §8 ci-dessus |

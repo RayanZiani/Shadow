@@ -203,8 +203,8 @@ Deux briques répondent à « l'IA actualise ses compétences via le RAG » et
 « l'IA gère les alertes des outils de supervision de sorte à agir elle-même ».
 
 **RAG (`services/rag-assistant`, 8091).** Index BM25 construit **à la
-construction de l'image** sur `docs/`, `README.md` et `TODO.md` : 14 documents,
-597 passages pour l'image de démonstration (`/healthz` fait foi après un
+construction de l'image** sur `docs/`, `README.md` et `TODO.md` : 18 documents,
+~710 passages pour l'image de démonstration (`/healthz` fait foi après un
 rebuild). `POST /ask` renvoie une réponse **avec ses sources**. Si Ollama
 (`llama3.1:8b`) est joignable, il rédige à partir des passages ; sinon le
 service répond en **extractif** — les phrases du dossier, citées — et le dit
@@ -275,7 +275,7 @@ intentions : chaque route, chaque secret, chaque écriture concurrente.
 que de servir avec un défaut connu. (3) Prouver par une commande rejouable :
 `tools/attack.py shop` (6 familles d'attaques), `tools/preflight.py` (secrets,
 PIN, services, dépôt), `tools/check_compose.py` (chaîne alerte → actionnable).
-Les 219 tests automatisés (§6.3) contiennent les régressions correspondantes.
+Les 221 tests automatisés (§6.3) contiennent les régressions correspondantes.
 
 **Les 10 limites, écrites et assumées.** 8 restent ouvertes, 2 sont fermées.
 
@@ -568,13 +568,13 @@ intervention humaine.
 | `burst` (50 ms d'intervalle) | 40 transactions, 9,7 tx/s, aucune erreur |
 | `malformed` (anneau vide, clés invalides) | **400** propre, service toujours vivant |
 
-### 6.3 Tests automatisés — 219
+### 6.3 Tests automatisés — 221
 
 | Suite | Nombre | Ce qu'elle prouve |
 |---|---|---|
 | `remediation-engine` bus d'états | 12 | `seq` croissant, SSE, abonné lent non bloquant |
 | `remediation-engine` flux d'incident | 2 (+ 5 scénarios en mode script) | ordre des états, verrou, échec explicite, état terminal toujours publié |
-| `remediation-engine` ingestion SIEM | 13 | alerte actionnable → incident, alerte de confort ignorée, anti-rebond, corrélation, jeton obligatoire |
+| `remediation-engine` ingestion SIEM | 14 | alerte actionnable → incident, alerte de confort ignorée, anti-rebond, corrélation, jeton obligatoire |
 | `ml-detector` | 12 | invariance au volume, purge de fenêtre, anti-rebond, réarmement |
 | `payment-api` | **43** (dont 17 registre/idempotence/rate limit) | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés, journal PostgreSQL, rechargement, rejeu par `reference`, 429 par IP |
 | `monero-crypto-core` (Rust) | 9 | Pedersen homomorphe, chiffrement réversible, anneau valide, falsifications rejetées |
@@ -585,9 +585,9 @@ intervention humaine.
 | `auth-service` | 9 | clé Vault, 503 si Vault muet, cache et rotation |
 | `backoffice` | **29** | parcours identifiant → visage → mot de passe, refus et caméra éteinte, blocage 5 min, LED avec expiration, habilitations, dernier admin protégé (y compris en concurrence), audit sans secret |
 | `shop-api` | **36** (dont 4 dialecte PostgreSQL) | catalogue en base, panier borné, achat, stock réservé puis restitué, survente impossible, historique par capability token, administration, double-clic sur « Payer », images, balayage des `pending` |
-| `rag-assistant` | **16** | index BM25, question de référence → bon document, citations, mode dégradé, disjoncteur Ollama |
+| `rag-assistant` | **17** | index BM25, question de référence → bon document, citations, mode dégradé, disjoncteur Ollama |
 
-**Total : 219** = 195 pytest (services) + 5 scénarios de script + 9 tests Rust
+**Total : 221** = 197 pytest (services) + 5 scénarios de script + 9 tests Rust
 + 10 tests HTTP. Les tests de script sont ceux de `test_incident_flow.py`
 lancés hors pytest ; ils comptent une fois, pas deux.
 
@@ -838,7 +838,7 @@ python tools/chaos.py
 | Services (docker compose) | 19 (dont 1 en Rust) |
 | Lignes de code (Python, Rust, JSX, C++, firmware) | ~13 300 |
 | Routes HTTP | ~100 (dont 13 en Rust, 21 back-office, 17 boutique) |
-| Tests automatisés | 219 (195 pytest + 5 script + 9 Rust + 10 HTTP) |
+| Tests automatisés | 221 (197 pytest + 5 script + 9 Rust + 10 HTTP) |
 | Fenêtres d'entraînement | 1 129 |
 | Bundle du dashboard | 206,82 kB |
 | Durée de la chaîne P0 | 6,6 / 7,1 / 7,2 s (limite 90 s) |

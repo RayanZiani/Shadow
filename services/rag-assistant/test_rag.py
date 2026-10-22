@@ -104,6 +104,10 @@ def client(index, tmp_path, monkeypatch):
 
     spec = importlib.util.spec_from_file_location("rag_main", HERE / "main.py")
     module = importlib.util.module_from_spec(spec)
+    # Enregistré dans `sys.modules` pour que les tests puissent le patcher
+    # (`monkeypatch.setattr(sys.modules["rag_main"], ...)`) : un module chargé
+    # par `spec_from_file_location` n'y est pas ajouté automatiquement.
+    sys.modules["rag_main"] = module
     spec.loader.exec_module(module)
     return TestClient(module.app)
 
@@ -188,8 +192,50 @@ def test_healthz_declare_le_mode_de_generation(client):
     assert health["generation"]["model"] == "llama3.1:8b"
     # `ollama` est un objet : état + raison + délai avant nouvelle tentative.
     ollama = health["generation"]["ollama"]
-    assert ollama["state"] in {"unknown", "unreachable", "ready"}
+    assert ollama["state"] in {"unknown", "unreachable", "reachable"}
     assert "retry_in_seconds" in ollama
+
+def test_un_succes_ollama_est_publie_comme_reachable(client, monkeypatch):
+    """`/healthz` doit dire `reachable` après une génération réussie.
+
+    Sinon il reste `unknown` pour toujours, ce qui contredit la documentation
+    (`reachable|unreachable`) et donne au jury l'impression que le mode Ollama
+    n'a jamais été branché. L'état n'est publié qu'après une réussite réelle :
+    pas de promesse sans preuve.
+    """
+    import rag
+    import sys
+
+    # La fixture `client` charge `main.py` sous le nom `rag_main` (plusieurs
+    # services exposent un `main.py`) : c'est CE module qu'il faut patcher.
+    rag_main = sys.modules["rag_main"]
+
+    # Un test précédent a pu ouvrir le disjoncteur (Ollama est muet dans la
+    # fixture) : on repart d'un état fermé, sinon on mesurerait cet état-là.
+    rag._breaker.update(down_until=0.0, last_error=None, last_success=0.0)
+
+    def generation_reussie(question, results, cfg):
+        # Le vrai `ollama_generate` met à jour le disjoncteur : le faux doit
+        # faire pareil, sinon on testerait un état que la production n'atteint
+        # jamais.
+        rag._release_probe(None)
+        return "réponse du modèle"
+
+    monkeypatch.setattr(rag_main, "ollama_generate", generation_reussie)
+    assert client.post("/ask", json={"q": "combien de temps prend la reprise ?"}).json()[
+        "engine"
+    ].startswith("ollama:")
+    ollama = client.get("/healthz").json()["generation"]["ollama"]
+    assert ollama["state"] == "reachable"
+    assert ollama["last_error"] is None
+
+    # Un échec ultérieur doit de nouveau être visible, immédiatement.
+    rag._trip_breaker("ConnectError")
+    ollama = client.get("/healthz").json()["generation"]["ollama"]
+    assert ollama["state"] == "unreachable"
+    rag._breaker["down_until"] = 0.0
+    rag._breaker["last_error"] = None
+    rag._breaker["last_success"] = 0.0
 
 
 def test_healthz_ne_bloque_pas_quand_ollama_est_muet(client):

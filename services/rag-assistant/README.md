@@ -76,7 +76,7 @@ Q&A. Constaté en recette.
 
 Le `Dockerfile` copie le corpus depuis la racine du dépôt, puis construit
 l'index ; le build **échoue** si l'index a moins de 5 documents ou 100 passages.
-L'image de démonstration publie **14 documents** et **597 passages** — le
+L'image de démonstration publie **18 documents** et **~710 passages** — le
 nombre exact dépend du contenu des documents au moment du build, et
 `/healthz` fait foi après un rebuild.
 
@@ -143,7 +143,7 @@ pas.
 {
   "status": "ok",
   "service": "rag-assistant",
-  "index": { "path": "/app/index.json", "documents": 14, "chunks": 597 },
+  "index": { "path": "/app/index.json", "documents": 18, "chunks": 709 },
   "retrieval": "bm25",
   "generation": {
     "model": "llama3.1:8b",
@@ -267,7 +267,7 @@ curl -s -X POST localhost:8091/ask -H 'Content-Type: application/json' \
   -d '{"q":"à quoi sert la key image ?"}'
 ```
 
-Attendu : `"documents": 14`, `"chunks": 597` sur l'image actuelle ; une réponse
+Attendu : `"documents": 18`, `"chunks"` ≈ 710 sur l'image actuelle ; une réponse
 qui cite `[docs/…]` et dont `sources` n'est pas vide ; `engine` égal à
 `extractive` si Ollama n'est pas joignable. La question de référence de la
 consigne (« la durée de la chaîne P0 ») doit retrouver `docs/RAPPORT.md`.

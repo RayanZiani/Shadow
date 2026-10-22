@@ -14,11 +14,20 @@ en base est un échec, pas une protection.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import httpx
 
-SHOP = "http://localhost:8087"
+# Depuis le PC Attaquant, la boutique n'est pas sur `localhost` :
+#     SHADOW_SHOP=http://10.251.4.134:8087 python tools/attack.py shop
+SHOP = os.environ.get("SHADOW_SHOP", "http://localhost:8087")
+
+
+def set_base(url: str) -> None:
+    """Déplace la cible (appelé par `attack.py --shop`)."""
+    global SHOP
+    SHOP = url.rstrip("/")
 
 
 def _alive(client: httpx.Client) -> bool:

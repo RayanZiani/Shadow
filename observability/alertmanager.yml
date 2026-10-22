@@ -25,6 +25,12 @@ receivers:
     webhook_configs:
       - url: http://remediation-engine:8084/alert
         send_resolved: false
+        # Alertmanager ne sait pas poser d'en-tête arbitraire (`http_config.
+        # headers` n'existe dans aucune version : le conteneur refusait de
+        # démarrer). Le mécanisme supporté est `authorization` : le moteur
+        # accepte donc `Authorization: Bearer <SERVICE_TOKEN>` en plus de
+        # l'en-tête `X-Service-Token` utilisé par les outils de recette.
         http_config:
-          headers:
-            X-Service-Token: "__SERVICE_TOKEN__"
+          authorization:
+            type: Bearer
+            credentials: "__SERVICE_TOKEN__"

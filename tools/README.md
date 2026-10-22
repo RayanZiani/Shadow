@@ -7,6 +7,9 @@ fonctionner. Aucun n'est appelé par les services en production.
 |---|---|
 | `e2e_demo.py` | Répétition générale : attaque → détection → remédiation → preuve, chronométrée |
 | `preflight.py` | **Pré-vol de soutenance** : services, secrets, PIN, dépôt — dit si le SI est démontrable |
+| `attack.py` | Attaques depuis le PC Attaquant (`--target`/`SHADOW_HOST` pour un second poste) |
+| `restock.py` | Remet le stock de la vitrine au seed (après l'attaque de survente) |
+| `warmup_rag.py` | Préchauffe Ollama et vérifie que le RAG répond en `ollama:<modèle>` |
 | `run_tests.ps1` | Lance toutes les suites (Python + Rust) sous Windows PowerShell, avec récapitulatif |
 | `run_tests.sh` | Lance les 181 tests du dépôt (Python + Rust), avec récapitulatif |
 | `check_compose.py` | Contrôle statique de `docker-compose.yml` (19 services attendus, montages, ports, alertes) |

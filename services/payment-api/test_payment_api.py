@@ -207,6 +207,38 @@ def test_healthz_expose_l_etat_du_noyau_crypto(client):
     assert "crypto_last_error" in body
 
 
+def test_une_panne_du_noyau_est_publiee_immediatement(client, monkeypatch):
+    """Un noyau arrêté doit se lire `degraded` sans attendre la sonde (4 s).
+
+    Constaté en recette le 22/10 : `tools/chaos.py crypto` échouait parce que
+    `/healthz` annonçait encore `ready` juste après l'arrêt du noyau — l'état
+    n'était rafraîchi que par la sonde périodique. Un état de santé périmé est
+    exactement la « panne silencieuse » que le projet cherche à supprimer.
+    """
+    import httpx
+
+    class NoyauArrete:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, *args, **kwargs):
+            raise httpx.ConnectError("noyau arrêté")
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", NoyauArrete)
+    main.CRYPTO_STATUS["ready"] = True
+    with pytest.raises(main.HTTPException) as refus:
+        asyncio.run(main._crypto("/crypto/mint", {}))
+    assert refus.value.status_code == 503
+    assert main.CRYPTO_STATUS["ready"] is False
+    assert client.get("/healthz").json()["crypto_core"] == "degraded"
+
+
 def test_healthz_expose_les_compteurs_du_registre(client, monkeypatch):
     """§0.6.2 : les pertes et tentatives de reconnexion sont publiées."""
     monkeypatch.setattr(main.REGISTRY, "lost_writes", 7)

@@ -2,7 +2,7 @@
 
 > **Point de départ** : mardi 20 octobre 2026, fin de journée 2 sur 5.
 > **Livraison** : vendredi 23 octobre 2026.
-> **État du code** : fonctionnel et testé — 219 tests, 195 pytest verts mesurés
+> **État du code** : fonctionnel et testé — 221 tests, 197 pytest verts mesurés
 > sur ce poste, 19 services, chaîne P0 en 6,6 / 7,1 / 7,2 s.
 >
 > **Constat qui commande tout le plan** : le projet n'a plus besoin d'être
@@ -98,7 +98,7 @@ gouvernance sait déjà faire.
 |---|---|---|
 | 09:00–09:30 | Gel du code | plus aucun commit sauf correctif bloquant |
 | 09:30–10:30 | Suite complète | `.\tools\run_tests.ps1` vert, `check_compose.py` vert, `check_encoding.py` vert |
-| 10:30–11:15 | Secrets et archive | `git status` vide, aucun `.env`/clé/`hvs.` dans les fichiers suivis, ZIP sans `node_modules`, `.venv`, `dist` |
+| 10:30–11:15 | Secrets et archive | `git status` vide, aucun `.env`/clé/token Vault dans les fichiers suivis, ZIP sans `node_modules`, `.venv`, `dist` |
 | 11:15–12:00 | Documents | PDF du rapport et de la gouvernance, slides à jour, toutes les commandes du README exécutées une fois |
 | 13:30–15:00 | Dernière répétition | 1 enchaînement complet, `preflight.py` vert |
 | 15:00–16:00 | Plan B | captures d'écran + clip de secours sur clé USB, PC de secours si possible |

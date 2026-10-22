@@ -7,7 +7,7 @@ Ce document décrit l'installation complète du **poste de démonstration Window
 
 > Ce qui a été validé : `docker compose up` complet (**19 services**), noyau
 > Rust compilé avec bLSAG, `tools/e2e_demo.py` trois fois de suite,
-> **219 tests automatisés**, Prometheus, Alertmanager et Grafana provisionnés,
+> **221 tests automatisés**, Prometheus, Alertmanager et Grafana provisionnés,
 > boutique en PostgreSQL, assistant RAG et back-office à deux facteurs.
 > Voir §7 pour les chiffres mesurés.
 
@@ -289,7 +289,7 @@ l'équivalent strict de `run_tests.sh` : mêmes suites, même ordre.
 | assistant RAG | `services/rag-assistant/test_rag.py` (16) | index BM25 du dossier, question de référence, citations, mode dégradé extractif, disjoncteur |
 | encodage | `tools/check_encoding.py` (contrôle) | aucun mojibake dans les fichiers livrés |
 
-Soit **219 tests** : **195 pytest**, **5 tests de script**, **9 tests Rust** et
+Soit **221 tests** : **197 pytest**, **5 tests de script**, **9 tests Rust** et
 **10 tests HTTP**. Les tests HTTP du noyau se déclarent ignorés si
 `docker compose` n'est pas démarré ; `cargo test` est lancé par les deux
 scripts si `cargo` est présent.
@@ -391,7 +391,7 @@ Chaîne P0             3 exécutions consécutives : 6,6 s / 7,1 s / 7,2 s
 Modèle                seuil appris 4,6091 ; FPR fenêtre 0,6 % (0,2 % sur
                       3 fenêtres consécutives) ; rappel 100 %
                       (1 129 fenêtres normales)
-Tests                 219 verts (195 pytest + 5 script + 9 Rust + 10 HTTP)
+Tests                 221 verts (197 pytest + 5 script + 9 Rust + 10 HTTP)
 cargo build --release 2 s (incrémental) / 12 s (à froid)
 npm run build         206,82 kB de JS, 1,1 s
 Prometheus            12 cibles up, 24 règles d'alerte évaluées (+ 4 règles de logs Loki)

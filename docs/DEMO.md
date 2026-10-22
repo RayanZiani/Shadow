@@ -32,6 +32,51 @@ Loki), le catalogue et la propreté du dépôt. Un avertissement sur un service
 non-P0 n'empêche pas de démontrer ; un échec bloquant, si. En cas de code 1,
 lire la section « NON DÉMONTRABLE » et corriger avant d'ouvrir la salle.
 
+### Le PC Hôte est aussi le PC IA
+
+L'assistant RAG interroge **Ollama sur la même machine** (le PC hôte), pas un
+serveur distant : `OLLAMA_URL=http://host.docker.internal:11434` dans
+`docker-compose.yml` fait le pont entre le conteneur et le service qui tourne sur
+l'hôte. Préparer une fois, avant la démonstration :
+
+```bash
+# macOS (poste de démonstration actuel)
+brew services start ollama          # démarre au login, survit au reboot
+ollama pull llama3.1:8b             # 4,9 Go, une seule fois
+
+# Windows / Linux : installeur officiel, puis le même service en tâche de fond
+ollama serve
+ollama pull llama3.1:8b
+
+# contrôle : le service doit répondre, et le conteneur le voir
+curl -s localhost:11434/api/tags
+curl -s localhost:8091/healthz | python -m json.tool     # generation.ollama
+```
+
+Attendu : `"state": "reachable"` et, sur une question, `engine:
+ollama:llama3.1:8b`. Si Ollama est muet, le RAG **ne casse pas** : il répond en
+extractif, cite ses sources et l'écrit dans `/healthz`. C'est un mode dégradé
+assumé, pas une panne — on le dit à voix haute plutôt que de le cacher.
+
+> Le premier appel après le démarrage d'Ollama charge le modèle en mémoire
+> (~10 s). Poser **une** question avant l'entrée dans la salle, sinon la
+> première réponse du jury arrive en retard.
+
+### Le PC Attaquant
+
+Second poste, distinct : il ne fait que lancer `tools/attack.py`. Préparation
+complète (adresse du PC Hôte, dépendance unique, commandes, dépannage) :
+[`PC-ATTAQUANT.md`](PC-ATTAQUANT.md). Le minimum à vérifier la veille :
+
+```bash
+# PC Attaquant
+curl -s http://<IP-PC-HOTE>:8085/healthz     # {"status":"ok","service":"waf",...}
+SHADOW_HOST=<IP-PC-HOTE> python tools/attack.py list
+```
+
+Aucun secret ne va sur ce poste : le jeton de service reste sur le PC Hôte, donc
+`attack.py reset` ne s'y lance pas.
+
 La caméra est le seul point que le script ne peut pas tester : ouvrir une fois
 http://localhost:5173, saisir l'identifiant et vérifier que la demande de caméra
 apparaît. C'est un contrôle de 10 secondes, pas une réinstallation.
@@ -78,6 +123,10 @@ Ne jamais lancer `--force` pendant que la pile tourne.
 
 **Réinitialiser la déception** entre deux répétitions :
 `python tools/attack.py reset`
+
+**Réinitialiser le stock** après `attack.py shop` (l'attaque de survente vide
+réellement un article) : `python tools/restock.py`. `--check` ne modifie rien et
+sort en code 1 si le stock a bougé.
 
 **Réinitialiser le back-office** (comptes bloqués, sessions ouvertes) :
 débloquer depuis l'écran « Habilitations », ou `docker compose restart backoffice`
@@ -232,8 +281,8 @@ docs/SECURITE.md §… · score …
 docs/COMPTE-RENDU.md §… · score …
 ```
 
-Ce qu'on dit : « L'index de l'image de démonstration contient **14 documents et
-597 passages** du dossier. La réponse cite ses sources ; le moteur est
+Ce qu'on dit : « L'index de l'image de démonstration contient **18 documents et
+~710 passages** du dossier. La réponse cite ses sources ; le moteur est
 `extractive` si Ollama n'est pas joignable, `ollama:llama3.1:8b` sinon. Il ne
 devine pas : sans passage, il dit qu'il ne sait pas. »
 
@@ -243,7 +292,7 @@ Vérification en une commande :
 curl.exe -s http://localhost:8091/healthz
 ```
 
-Attendu sur l'image actuelle : `"documents": 14`, `"chunks": 597`, et
+Attendu sur l'image actuelle : `"documents": 18`, `"chunks"` ≈ 710, et
 `generation.ollama` qui vaut `reachable` ou `unreachable`. Après un rebuild,
 `/healthz` fait foi. Si le quadrant est vide :
 `docker compose up -d rag-assistant`.
@@ -499,6 +548,7 @@ service quelques secondes. Le registre d'outputs, lui, est persistant
 python tools/preflight.py       # doit repasser en code 0
 python tools/e2e_demo.py        # recette complète de la chaîne
 python tools/attack.py reset    # désarmer la déception
+python tools/restock.py         # remettre le stock (après attack.py shop)
 curl.exe -s http://localhost:8084/history | python -m json.tool   # trace pour le dossier
 ```
 

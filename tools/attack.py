@@ -29,17 +29,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
+from urllib.parse import urlsplit
 
 import httpx
 
 import service_token
 
 # Le PC Attaquant passe par le WAF : c'est le point d'entrée « client ».
-TARGET = "http://localhost:8085"
-DIRECT = "http://localhost:8080"
+#
+# Deux postes, deux adresses. Sur le PC Hôte, `localhost` suffit ; depuis le PC
+# Attaquant, il faut l'adresse de la machine qui héberge la pile :
+#
+#     SHADOW_HOST=10.251.4.134 python tools/attack.py poison
+#     python tools/attack.py poison --target http://10.251.4.134:8085
+#
+# `SHADOW_HOST` couvre les trois ports d'un coup (WAF, paiement direct, boutique) ;
+# `--target` ne déplace que le WAF. Aucun secret n'est nécessaire pour attaquer :
+# seul `reset` (désarmer la déception) exige le jeton de service, et il se lance
+# depuis le PC Hôte.
+SHADOW_HOST = os.environ.get("SHADOW_HOST", "localhost").strip() or "localhost"
+TARGET = os.environ.get("SHADOW_WAF", f"http://{SHADOW_HOST}:8085")
+DIRECT = os.environ.get("SHADOW_PAYMENT", f"http://{SHADOW_HOST}:8080")
+SHOP = os.environ.get("SHADOW_SHOP", f"http://{SHADOW_HOST}:8087")
 
 
 def log(message: str) -> None:
@@ -202,8 +217,11 @@ def run(kind: str) -> int:
         if kind == "shop":
             # Les attaques boutique attaquent un autre service : elles ont leur
             # propre session et leur propre bilan. On leur passe la main.
-            from attack_shop import run_shop
+            from attack_shop import run_shop, set_base
 
+            # La boutique n'est pas derrière le WAF : même hôte, port 8087.
+            # `--target` déplace le WAF, `--shop` (ou SHADOW_SHOP) la boutique.
+            set_base(SHOP)
             return run_shop()
 
         print(json.dumps(summary, indent=2, ensure_ascii=False))
@@ -226,6 +244,11 @@ if __name__ == "__main__":
         choices=["poison", "replay", "burst", "malformed", "shop", "all", "list", "reset"],
     )
     parser.add_argument("--target", default=TARGET, help="URL du WAF")
+    parser.add_argument(
+        "--shop",
+        default=os.environ.get("SHADOW_SHOP", f"http://{SHADOW_HOST}:8087"),
+        help="URL de la boutique (attaques 'shop')",
+    )
     args = parser.parse_args()
 
     if args.kind == "list":
@@ -238,5 +261,13 @@ if __name__ == "__main__":
         print("reset      désarme la déception (entre deux répétitions)")
         raise SystemExit(0)
 
-    TARGET = args.target
+    TARGET = args.target.rstrip("/")
+    SHOP = args.shop.rstrip("/")
+    # `--target` ne déplace que le WAF ; le paiement direct et la boutique
+    # suivent le même hôte, sauf indication contraire explicite.
+    host = urlsplit(TARGET).hostname or "localhost"
+    if "--target" in sys.argv and "SHADOW_PAYMENT" not in os.environ:
+        DIRECT = f"http://{host}:8080"
+    if "--target" in sys.argv and "--shop" not in sys.argv and "SHADOW_SHOP" not in os.environ:
+        SHOP = f"http://{host}:8087"
     raise SystemExit(run(args.kind))

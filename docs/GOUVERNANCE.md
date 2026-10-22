@@ -367,7 +367,7 @@ ou à un `DROP TABLE`. Tant que `pg_dump` n'est pas scripté, le RPO de
 | 21.2.b — gestion des incidents | Détection ML + remédiation autonome | `e2e_demo.py` |
 | 21.2.c — continuité d'activité | PCA/PRA, RTO par service | §7 |
 | 21.2.d — sécurité de la chaîne d'approvisionnement | Versions figées (`requirements.txt`, `Cargo.lock`) | `--locked` |
-| 21.2.e — sécurité du développement | Tests automatisés (**219** : 195 pytest, 5 script, 9 Rust, 10 HTTP), audit de code | `tools/run_tests.sh` |
+| 21.2.e — sécurité du développement | Tests automatisés (**221** : 197 pytest, 5 script, 9 Rust, 10 HTTP), audit de code | `tools/run_tests.sh` |
 | 21.2.f — évaluation de l'efficacité | `validate_real.py`, `analyze_separation.py` | §5.1 |
 | 21.2.g — hygiène et formation | Hors périmètre technique | — |
 | 21.2.h — cryptographie | Ristretto255, bLSAG, Pedersen, View Key séparée | §5.2 |
