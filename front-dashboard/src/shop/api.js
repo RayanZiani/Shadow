@@ -80,10 +80,15 @@ export const shop = {
     }),
   removeItem: (token, productId) =>
     request(`/cart/${token}/items/${productId}`, { method: "DELETE" }),
-  checkout: (token, customerRef) =>
+  checkout: (token, customerRef, customer = {}) =>
     request("/checkout", {
       method: "POST",
-      body: { cart_token: token, customer_ref: customerRef || null },
+      body: {
+        cart_token: token,
+        customer_ref: customerRef || null,
+        customer_name: customer.name || null,
+        customer_email: customer.email || null,
+      },
     }),
   orders: (customerRef) =>
     request(`/orders?customer_ref=${encodeURIComponent(customerRef)}`),

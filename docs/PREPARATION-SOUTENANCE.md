@@ -3,7 +3,7 @@
 > État mesuré le **22 octobre 2026** sur ce poste (Mac Apple Silicon, 36 Go,
 > Colima + Docker 29.5, Ollama local) : **19 services Up**, pré-vol vert,
 > chaîne P0 **7,2 / 7,4 / 6,7 s** sur trois exécutions consécutives, boutique
-> `paid` en 72 ms, **6/6** scénarios de chaos, **221 tests** verts, RAG en
+> `paid` en 72 ms, **6/6** scénarios de chaos, **226 tests** verts, RAG en
 > `ollama:llama3.1:8b`.
 >
 > Ce document dit **ce qui reste à faire**, dans l'ordre, pour transformer cet
@@ -24,7 +24,7 @@
 | Boutique | `python tools/e2e_shop.py` | commande `paid`, stock décrémenté, key image stockée |
 | Attaques | `python tools/attack.py all` · `shop` | 4/4 et 6/6 conformes, service debout |
 | Chaos | `python tools/chaos.py` | 6/6 `PASS` |
-| Tests | `./tools/run_tests.sh --fast` | 221 verts (dont Rust + HTTP) |
+| Tests | `./tools/run_tests.sh --fast` | 226 verts (dont Rust + HTTP) |
 | IA locale | `python tools/warmup_rag.py` | `ollama:llama3.1:8b`, sources citées |
 | Observabilité | `curl localhost:9090/api/v1/targets` | 12 cibles `up` |
 | Grafana | `localhost:3001` | sources Prometheus **et** Loki provisionnées |
@@ -37,7 +37,7 @@ démo si elle avait été oubliée.
 
 | # | À faire | Pourquoi c'est bloquant | Temps |
 |---|---|---|---|
-| **1** | **Enrôler l'administrateur** (visage + mot de passe) | `bootstrap_required: true` : le dashboard **n'affiche rien** sans session. C'est aussi le parcours de la consigne additionnelle (E1–E9) | 5 min |
+| ~~1~~ | ~~Enrôler l'administrateur~~ — **fait le 22/10** | `bootstrap_required: false`, `users_total: 1`, `backoffice_check.py` 0 échec | — |
 | **2** | **Vérifier la caméra dans le navigateur** | `getUserMedia` ne fonctionne qu'en `http://localhost:5173` ; autorisation à accorder une fois | 2 min |
 | **3** | **Enregistrer le Clip Chrono** (60 s, sans coupe) | livrable noté 15 pts, et le seul obligatoire en vidéo | 1 h |
 | **4** | **Écrire le PPTX** | livrable obligatoire, aucun support n'existe encore dans `docs/` | 2 h |
@@ -45,8 +45,12 @@ démo si elle avait été oubliée.
 | **6** | **ZIP du code sans secret** | règle éliminatoire | 30 min |
 | 7 | Bandeau LED ESP8266 + point d'accès | E10–E16 : **non bloquant par conception**, mais 6 exigences ne sont prouvées que sur la carte | 1 h si le matériel est là |
 
-**Ordre recommandé** : 1 → 2 → 3 → 4 → 5 → 6. Le clip avant les slides : il
+**Ordre recommandé** : 2 → 3 → 4 → 5 → 6. Le clip avant les slides : il
 impose les chiffres et les captures qui iront dans le PPTX.
+
+> **Fait sur ce poste le 22/10** : administrateur enrôlé (visage + mot de passe),
+> `bootstrap_required: false`, `tools/backoffice_check.py` → 0 échec. Le
+> paragraphe §2 reste la procédure pour un poste neuf.
 
 ---
 
@@ -215,7 +219,7 @@ Le contenu existe déjà : `docs/RAPPORT.md` (844 lignes) + `GOUVERNANCE.md`
 | 5 | Détection ML : pipeline, mesures, ce que la mesure a imposé | `RAPPORT.md` §3 |
 | 6 | Cryptographie : primitives, écarts assumés | `RAPPORT.md` §4 |
 | 7 | Remédiation + déception : les 10 étapes | `RAPPORT.md` §5 |
-| 8 | Preuves : 3 exécutions, attaques, 221 tests, charge, chaos | `RAPPORT.md` §6 |
+| 8 | Preuves : 3 exécutions, attaques, 226 tests, charge, chaos | `RAPPORT.md` §6 |
 | 9 | Limites | `RAPPORT.md` §7 |
 | 10 | Gouvernance : EBIOS, PCA/PRA, NIS2, DORA | `GOUVERNANCE.md` §4–8 |
 | Annexes | endpoints, commandes de reproduction, volumétrie | `RAPPORT.md` annexes A–C |

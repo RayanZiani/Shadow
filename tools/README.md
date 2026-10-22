@@ -10,6 +10,8 @@ fonctionner. Aucun n'est appelé par les services en production.
 | `attack.py` | Attaques depuis le PC Attaquant (`--target`/`SHADOW_HOST` pour un second poste) |
 | `restock.py` | Remet le stock de la vitrine au seed (après l'attaque de survente) |
 | `warmup_rag.py` | Préchauffe Ollama et vérifie que le RAG répond en `ollama:<modèle>` |
+| `build_deck.py` | Génère `docs/PRESENTATION-SOUTENANCE.pptx` (notes du présentateur incluses) |
+| `build_dossier.py` | Génère `docs/DOSSIER-INGENIERIE-GOUVERNANCE.pdf` (11 pages + annexes) |
 | `run_tests.ps1` | Lance toutes les suites (Python + Rust) sous Windows PowerShell, avec récapitulatif |
 | `run_tests.sh` | Lance les 181 tests du dépôt (Python + Rust), avec récapitulatif |
 | `check_compose.py` | Contrôle statique de `docker-compose.yml` (19 services attendus, montages, ports, alertes) |

@@ -10,8 +10,8 @@
 
 **Résumé au 20/10 au soir.** **12 failles** fermées (F1–F12), **4 bugs
 critiques** fermés (C1, C2, C4, S1), **10 limites** écrites (8 ouvertes,
-2 fermées), **12 points moyens** suivis dans `TODO.md` §0.6. **221 tests** :
-197 pytest, 5 tests de script, 9 tests Rust, 10 tests HTTP. Les mesures Docker
+2 fermées), **12 points moyens** suivis dans `TODO.md` §0.6. **226 tests** :
+202 pytest, 5 tests de script, 9 tests Rust, 10 tests HTTP. Les mesures Docker
 ne sont pas refaites sur ce poste (Docker absent) : elles viennent de la pile de
 démonstration, et c'est dit à chaque fois.
 

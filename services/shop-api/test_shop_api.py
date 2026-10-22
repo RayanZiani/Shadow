@@ -796,3 +796,61 @@ def test_la_reconciliation_ne_restitue_pas_deux_fois_un_paiement_reussi(app, cli
     ]
     assert len(events) == 1
 
+
+
+# ---------------------------------------------------------------------------
+# Identité du client — le ticket de caisse
+# ---------------------------------------------------------------------------
+def test_le_ticket_porte_le_nom_et_l_email_du_client(client, stub):
+    """Sans identité, « Payer » ressemble à un clic anonyme.
+
+    La vitrine ne crée pas de compte (achat invité), mais la commande doit
+    porter un nom et une adresse : c'est ce qui rend le ticket crédible devant
+    le jury et ce que l'administration affiche.
+    """
+    token, _ = _cart_with(client, quantity=1)
+    response = client.post(
+        "/checkout",
+        json={
+            "cart_token": token,
+            "customer_name": "  Camille Martin ",
+            "customer_email": "Camille.Martin@Exemple.FR",
+        },
+    )
+    assert response.status_code == 201, response.text
+    order = response.json()["order"]
+    assert order["customer_name"] == "Camille Martin"
+    # Normalisé en minuscules : deux écritures de la même adresse se comparent.
+    assert order["customer_email"] == "camille.martin@exemple.fr"
+
+    reference = order["reference"]
+    customer_ref = response.json()["customer_ref"]
+    relu = client.get(f"/orders/{reference}", params={"customer_ref": customer_ref}).json()
+    assert relu["order"]["customer_name"] == "Camille Martin"
+
+
+def test_une_adresse_email_invalide_est_refusee_avant_tout_debit(client, stub):
+    token, product = _cart_with(client, quantity=1)
+    response = client.post(
+        "/checkout",
+        json={"cart_token": token, "customer_name": "Camille", "customer_email": "pas-une-adresse"},
+    )
+    assert response.status_code == 400
+    assert "e-mail" in response.json()["detail"]
+    # Rien n'a été débité ni réservé : le stock est intact, le panier aussi.
+    assert _product(client)["stock"] == product["stock"]
+    assert client.get(f"/cart/{token}").json()["cart"]["count"] == 1
+
+
+def test_ladministration_voit_le_client_de_chaque_commande(client, stub, monkeypatch):
+    monkeypatch.setenv("SERVICE_TOKEN", "jeton-de-test")
+    headers = {"X-Service-Token": "jeton-de-test"}
+
+    token, _ = _cart_with(client, quantity=1)
+    client.post(
+        "/checkout",
+        json={"cart_token": token, "customer_name": "Noah Petit", "customer_email": "noah@exemple.fr"},
+    )
+    orders = client.get("/admin/orders", headers=headers).json()["orders"]
+    assert orders[0]["customer_name"] == "Noah Petit"
+    assert orders[0]["customer_email"] == "noah@exemple.fr"

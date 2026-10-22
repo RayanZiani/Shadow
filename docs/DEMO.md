@@ -202,7 +202,7 @@ quadrant RAG ; on ne réordonne rien.
 | 18–30 s | Vitrine | catalogue, images, stock ; ouvrir un article et montrer le prix en base |
 | 30–38 s | Panier | deux articles, total recalculé |
 | 38–48 s | Paiement réel | clic **Payer**, key image, commande `paid` |
-| 48–54 s | Historique + back-office | historique client, puis « Habilitations → Boutique » : articles et commandes |
+| 48–54 s | Historique + back-office | historique client, puis **4 · Admin boutique** (barre du bas) : articles et commandes |
 | 54–58 s | Attaque | `python tools/attack.py poison` depuis le PC Attaquant |
 | 58–68 s | ML + Ansible | score, seuil, badge **REMEDIATION**, journal du playbook |
 | 68–78 s | Reprise | badge **RETABLI**, nouveau paiement avec le PIN du jour |
@@ -242,7 +242,7 @@ La boutique n'a pas de chronologie séparée : elle est dans le storyboard
 
 | Action | Ce qu'on voit | Ce qu'on dit |
 |---|---|---|
-| « Habilitations » → « Boutique » | tableau des articles et des commandes | « Le back gère le catalogue et voit la preuve de chaque paiement. » |
+| **4 · Admin boutique** (barre du bas) | tableau des articles et des commandes | « Le back gère le catalogue et voit la preuve de chaque paiement. » |
 | Modifier le stock, retirer un article | la vitrine se met à jour | « Une seule source de vérité : la base. » |
 | Ouvrir une commande | lignes, montant, key image, événements | « Le prix est recopié au moment de l'achat : l'historique reste juste même si le tarif change. » |
 

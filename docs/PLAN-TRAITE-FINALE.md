@@ -2,7 +2,7 @@
 
 > **Point de départ** : mardi 20 octobre 2026, fin de journée 2 sur 5.
 > **Livraison** : vendredi 23 octobre 2026.
-> **État du code** : fonctionnel et testé — 221 tests, 197 pytest verts mesurés
+> **État du code** : fonctionnel et testé — 226 tests, 202 pytest verts mesurés
 > sur ce poste, 19 services, chaîne P0 en 6,6 / 7,1 / 7,2 s.
 >
 > **Constat qui commande tout le plan** : le projet n'a plus besoin d'être
@@ -21,7 +21,7 @@
 |---|---|---|
 | Chaîne P0 | attaque → ML → Ansible → preuve → déception | `tools/e2e_demo.py`, 6,6 / 7,1 / 7,2 s |
 | Cryptographie | bLSAG, key image, Pedersen, audit view-only | 9 tests Rust + 10 HTTP |
-| Boutique (N1–N4) | catalogue PostgreSQL, panier, paiement réel, historique, back d'admin | 36 tests + `tools/e2e_shop.py` |
+| Boutique (N1–N4) | catalogue PostgreSQL, panier, paiement réel, historique, back d'admin | 39 tests + `tools/e2e_shop.py` |
 | IA (N6) | RAG BM25, quadrant assistant, ingestion SIEM, corrélation multi-alertes | 16 tests + 27 tests moteur |
 | Sécurité (N5) | 12 failles fermées, 4 bugs critiques fermés, PIN généré, jetons de service | `docs/SECURITE.md`, 43 tests paiement |
 | Consigne additionnelle | visage + mot de passe, habilitations, bandeau LED | 29 tests, `tools/backoffice_check.py` |

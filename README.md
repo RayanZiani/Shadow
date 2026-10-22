@@ -3,7 +3,7 @@
 Système de paiement fictif à confidentialité cryptographique, avec détection
 d'anomalies par machine learning et remédiation autonome. Workshop M2 2026.
 
-> **État au 22/10** — **221 tests** verts, **19 services** Docker,
+> **État au 22/10** — **226 tests** verts, **19 services** Docker,
 > **12 failles fermées** et **4 bugs critiques** corrigés. La recette tient en
 > une commande : `python tools/preflight.py` (code 0 = démontrable). Détail :
 > [`docs/SECURITE.md`](docs/SECURITE.md), [`TODO.md`](TODO.md) §0.5 et
@@ -35,7 +35,7 @@ historique — avec un back d'administration, un **assistant RAG** local et une
 | `shadow-api` | Honeypot borné, journal d'interception consultable | 4 tests |
 | `auth-service` | Clé JWT lue dans **Vault** (KV v2), fallback explicite sinon | 9 tests |
 | `backoffice` | **Authentification visage + mot de passe** (caméra USB du PC hôte), habilitations, bandeau LED ESP8266 | 29 tests + `tools/backoffice_check.py` |
-| `shop-api` | **Boutique** : articles en base, panier, commande, paiement bLSAG, historique | 36 tests (32 + 4 dialecte), PostgreSQL |
+| `shop-api` | **Boutique** : articles en base, panier, commande, paiement bLSAG, historique | 39 tests (35 + 4 dialecte), PostgreSQL |
 | `rag-assistant` | **RAG local** : index BM25 construit au build, Ollama optionnel, sources citées | 17 tests |
 | `front-dashboard` | **Vitrine** + **5 quadrants**, anneau SVG, pavé PIN, score ML, audit view-only | `npm run build` |
 | `hardware/bridge` | Pont SSE → USB, reconnexion, mode répétition | 9 tests + `--dry-run` |
@@ -56,6 +56,9 @@ marge ≈ 83 s), sur trois exécutions consécutives.
 | [`docs/CONSIGNE-ADDITIONNELLE.md`](docs/CONSIGNE-ADDITIONNELLE.md) | **Réponse à la consigne additionnelle** : exigence par exigence, avec preuve |
 | [`docs/GOUVERNANCE.md`](docs/GOUVERNANCE.md) | EBIOS RM, PCA/PRA, NIS2, DORA |
 | [`docs/DEMO.md`](docs/DEMO.md) | Runbook de soutenance (3 min, seconde par seconde) |
+| [`docs/SCRIPT-ORAL.md`](docs/SCRIPT-ORAL.md) | **Quoi dire, quoi cliquer** : pitch, démo, Q&A, PC attaquant |
+| [`docs/PRESENTATION-SOUTENANCE.pptx`](docs/PRESENTATION-SOUTENANCE.pptx) | Support de soutenance, 16 diapositives (texte dans les notes) |
+| [`docs/DOSSIER-INGENIERIE-GOUVERNANCE.pdf`](docs/DOSSIER-INGENIERIE-GOUVERNANCE.pdf) | Dossier 11 pages + annexes, prêt à rendre |
 | [`docs/PREPARATION-SOUTENANCE.md`](docs/PREPARATION-SOUTENANCE.md) | **PC hôte + PC IA** : enrôlement, clip, slides, PDF, ZIP, répétitions |
 | [`docs/PC-ATTAQUANT.md`](docs/PC-ATTAQUANT.md) | Préparation du second poste (attaques depuis un autre PC) |
 | [`docs/REGLES-JURY-20-10.md`](docs/REGLES-JURY-20-10.md) | Nouvelles règles du 20/10 : ce qui est livré, prouvé, et ce qui reste |
@@ -254,11 +257,11 @@ python3 -m venv .venv
 ./tools/run_tests.sh --fast
 ```
 
-**221 tests** : 197 pytest, 5 tests de script, 9 Rust, 10 HTTP. Par brique :
+**226 tests** : 202 pytest, 5 tests de script, 9 Rust, 10 HTTP. Par brique :
 bus d'états et incidents (19), ingestion SIEM (14), détecteur ML (12), API de
 paiement (27 + **16 registre**), noyau Rust unitaire (9) et HTTP (10), WAF (10),
 pont hardware (9), honeypot (4), auth-service (9), **back-office (29)**,
-**boutique (32 + 4 dialecte)**, **assistant RAG (17)**, plus le contrôle
+**boutique (35 + 4 dialecte)**, **assistant RAG (17)**, plus le contrôle
 d'encodage des fichiers livrés.
 
 > Les deux scripts lancent chaque suite **dans le dossier de son service**.

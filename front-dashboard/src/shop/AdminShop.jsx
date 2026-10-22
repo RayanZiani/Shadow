@@ -259,6 +259,7 @@ export default function AdminShop() {
           <thead>
             <tr className="text-left text-ink/60 text-[11px] uppercase">
               <th className="pb-1">référence</th>
+              <th className="pb-1">client</th>
               <th className="pb-1">date</th>
               <th className="pb-1">total</th>
               <th className="pb-1">statut</th>
@@ -269,6 +270,12 @@ export default function AdminShop() {
             {orders.map((order) => (
               <tr key={order.reference} className="border-t border-rule/50 align-top">
                 <td className="py-2 font-mono text-[12px]">{order.reference}</td>
+                <td className="py-2 text-[12px]">
+                  {order.customer_name || <span className="text-ink/40">—</span>}
+                  {order.customer_email && (
+                    <span className="block text-ink/50 text-[11px]">{order.customer_email}</span>
+                  )}
+                </td>
                 <td className="py-2 text-ink/70 text-[12px]">
                   {new Date(order.created_at * 1000).toLocaleString()}
                 </td>
@@ -291,7 +298,7 @@ export default function AdminShop() {
             ))}
             {orders.length === 0 && (
               <tr>
-                <td colSpan={5} className="py-2 text-ink/50">
+                <td colSpan={6} className="py-2 text-ink/50">
                   aucune commande
                 </td>
               </tr>

@@ -275,7 +275,7 @@ intentions : chaque route, chaque secret, chaque écriture concurrente.
 que de servir avec un défaut connu. (3) Prouver par une commande rejouable :
 `tools/attack.py shop` (6 familles d'attaques), `tools/preflight.py` (secrets,
 PIN, services, dépôt), `tools/check_compose.py` (chaîne alerte → actionnable).
-Les 221 tests automatisés (§6.3) contiennent les régressions correspondantes.
+Les 226 tests automatisés (§6.3) contiennent les régressions correspondantes.
 
 **Les 10 limites, écrites et assumées.** 8 restent ouvertes, 2 sont fermées.
 
@@ -568,7 +568,7 @@ intervention humaine.
 | `burst` (50 ms d'intervalle) | 40 transactions, 9,7 tx/s, aucune erreur |
 | `malformed` (anneau vide, clés invalides) | **400** propre, service toujours vivant |
 
-### 6.3 Tests automatisés — 221
+### 6.3 Tests automatisés — 226
 
 | Suite | Nombre | Ce qu'elle prouve |
 |---|---|---|
@@ -576,18 +576,18 @@ intervention humaine.
 | `remediation-engine` flux d'incident | 2 (+ 5 scénarios en mode script) | ordre des états, verrou, échec explicite, état terminal toujours publié |
 | `remediation-engine` ingestion SIEM | 14 | alerte actionnable → incident, alerte de confort ignorée, anti-rebond, corrélation, jeton obligatoire |
 | `ml-detector` | 12 | invariance au volume, purge de fenêtre, anti-rebond, réarmement |
-| `payment-api` | **43** (dont 17 registre/idempotence/rate limit) | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés, journal PostgreSQL, rechargement, rejeu par `reference`, 429 par IP |
+| `payment-api` | **44** (dont 17 registre/idempotence/rate limit) | gamma, `unspent`, quarantaine, ring-size, PIN, non-exposition des clés, journal PostgreSQL, rechargement, rejeu par `reference`, 429 par IP |
 | `monero-crypto-core` (Rust) | 9 | Pedersen homomorphe, chiffrement réversible, anneau valide, falsifications rejetées |
 | `monero-crypto-core` (HTTP) | 10 | émission, dérivation, scan, audit, équilibre, bLSAG, rejeu |
 | `waf` | 10 | âge médian, routage honeypot, **client légitime jamais dérouté** |
 | `hardware/bridge` | 9 | trame série, états inconnus, pont strictement en lecture |
 | `shadow-api` | 4 | honeypot jamais repéré, journal borné |
 | `auth-service` | 9 | clé Vault, 503 si Vault muet, cache et rotation |
-| `backoffice` | **29** | parcours identifiant → visage → mot de passe, refus et caméra éteinte, blocage 5 min, LED avec expiration, habilitations, dernier admin protégé (y compris en concurrence), audit sans secret |
-| `shop-api` | **36** (dont 4 dialecte PostgreSQL) | catalogue en base, panier borné, achat, stock réservé puis restitué, survente impossible, historique par capability token, administration, double-clic sur « Payer », images, balayage des `pending` |
+| `backoffice` | **28** (+ 1 ignoré) | parcours identifiant → visage → mot de passe, refus et caméra éteinte, blocage 5 min, LED avec expiration, habilitations, dernier admin protégé (y compris en concurrence), audit sans secret |
+| `shop-api` | **39** (dont 4 dialecte PostgreSQL) | catalogue en base, panier borné, achat, stock réservé puis restitué, survente impossible, historique par capability token, administration, double-clic sur « Payer », images, balayage des `pending` |
 | `rag-assistant` | **17** | index BM25, question de référence → bon document, citations, mode dégradé, disjoncteur Ollama |
 
-**Total : 221** = 197 pytest (services) + 5 scénarios de script + 9 tests Rust
+**Total : 226** = 202 pytest (services) + 5 scénarios de script + 9 tests Rust
 + 10 tests HTTP. Les tests de script sont ceux de `test_incident_flow.py`
 lancés hors pytest ; ils comptent une fois, pas deux.
 
@@ -838,7 +838,7 @@ python tools/chaos.py
 | Services (docker compose) | 19 (dont 1 en Rust) |
 | Lignes de code (Python, Rust, JSX, C++, firmware) | ~13 300 |
 | Routes HTTP | ~100 (dont 13 en Rust, 21 back-office, 17 boutique) |
-| Tests automatisés | 221 (197 pytest + 5 script + 9 Rust + 10 HTTP) |
+| Tests automatisés | 226 (202 pytest + 5 script + 9 Rust + 10 HTTP) |
 | Fenêtres d'entraînement | 1 129 |
 | Bundle du dashboard | 206,82 kB |
 | Durée de la chaîne P0 | 6,6 / 7,1 / 7,2 s (limite 90 s) |

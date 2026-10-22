@@ -10,7 +10,7 @@
 > ouvert**. Une limite écrite ne coûte pas de point ; une limite découverte en
 > Q&A en coûte.
 >
-> **Chiffres** : **221 tests** (197 pytest + 5 script + 9 Rust + 10 HTTP) ·
+> **Chiffres** : **226 tests** (202 pytest + 5 script + 9 Rust + 10 HTTP) ·
 > **19 services** · chaîne P0 **6,6 / 7,1 / 7,2 s** · RAG **18 documents /
 > ~710 passages** · bundle dashboard **206,82 kB** · **PIN généré**, jamais une
 > constante publique.
@@ -457,7 +457,7 @@ déterministe. Le playbook est le même que celui du détecteur ML.
 | « Le PIN est-il une valeur publique ? » | non : il est généré et transmis par `.env` ; `preflight.py` vérifie qu'il arrive au conteneur | `test_le_pin_par_defaut_ne_fonctionne_plus` |
 | « Votre IA invente-t-elle ? » | elle cite ses sources ; sans Ollama, elle passe en extractif et le dit | `test_le_mode_extractif_cite_ses_sources` |
 | « Une alerte déclenche-t-elle vraiment ? » | oui : `PaiementRefuse` → `/alert` → même playbook que le ML | `test_une_alerte_actionnable_ouvre_un_incident` |
-| « Combien de tests ? » | 221 : 197 pytest, 5 script, 9 Rust, 10 HTTP | `.\tools\run_tests.ps1` |
+| « Combien de tests ? » | 226 : 202 pytest, 5 script, 9 Rust, 10 HTTP | `.\tools\run_tests.ps1` |
 | « Pourquoi pas Prestashop ? » | le SI est écrit ici : modèle de données, surface d'attaque et preuve maîtrisés ; pas de CMS à durcir | `services/shop-api/README.md` |
 | « Pourquoi le firmware n'est pas flashé ? » | il compile (35,4 % RAM, 28,0 % flash) ; le flash et le rendu LED restent à prouver sur la carte | `docs/CONSIGNE-ADDITIONNELLE.md` §1 |
 | « Qu'est-ce qui reste ouvert ? » | TLS, vivacité, Bulletproofs, AppRole, PostgreSQL mono-nœud, Ollama | §8 ci-dessus |

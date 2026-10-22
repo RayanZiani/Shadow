@@ -575,7 +575,9 @@ function Supervision({ user, onLogout, onOpenAdmin }) {
 
         {/* Cinquième quadrant : l'IA/DATA n'apparaissait qu'en `curl`. */}
         <Card title="Assistant RAG — dossier technique" className="md:col-span-2">
-          <RagAssistant />
+          <div id="assistant-rag">
+            <RagAssistant />
+          </div>
         </Card>
 
         <Card title="Console de remédiation & conformité DORA">
@@ -635,6 +637,58 @@ function Supervision({ user, onLogout, onOpenAdmin }) {
  * démonstration restent joignables — mais cela évite qu'un écran de supervision
  * s'affiche devant quelqu'un qui n'a pas franchi la reconnaissance faciale.
  */
+
+/**
+ * Barre de navigation de démonstration.
+ *
+ * Pourquoi elle existe : en soutenance, on n'a pas le temps de chercher un
+ * bouton. Les quatre écrans utiles sont à un clic, numérotés dans l'ordre du
+ * storyboard, et l'étape courante est visible. Sans elle, « Habilitations →
+ * Boutique » se perd au milieu d'un panneau d'administration.
+ *
+ * Elle n'ajoute aucune autorisation : les étapes 2 à 4 restent fermées sans
+ * session, et le serveur refuse de toute façon (401/403).
+ */
+const DEMO_STEPS = [
+  { view: "shop", label: "1 · Vitrine", hint: "catalogue, panier, ticket" },
+  { view: "supervision", label: "2 · Supervision", hint: "badge, score ML, Ansible" },
+  { view: "admin", label: "3 · Habilitations", hint: "visage, rôles, audit" },
+  { view: "shop-admin", label: "4 · Admin boutique", hint: "articles, commandes" },
+  { view: "rag", label: "5 · Assistant RAG", hint: "question, sources, moteur" },
+];
+
+function DemoNav({ view, user, onNavigate }) {
+  return (
+    <nav
+      aria-label="Navigation de démonstration"
+      className="fixed bottom-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 rounded-full bg-ink/95 px-2 py-1.5 shadow-xl"
+    >
+      <span className="px-2 text-[10px] font-bold uppercase tracking-wider text-page/50">
+        démo
+      </span>
+      {DEMO_STEPS.map((step) => {
+        const locked = step.view !== "shop" && !user;
+        const active = view === step.view;
+        return (
+          <button
+            key={step.view}
+            onClick={() => onNavigate(locked ? "login" : step.view)}
+            title={locked ? "session back-office requise" : step.hint}
+            className={
+              active
+                ? "rounded-full bg-page px-3 py-1 text-[11px] font-bold text-ink"
+                : "rounded-full px-3 py-1 text-[11px] font-bold text-page/80 hover:bg-page/10"
+            }
+          >
+            {step.label}
+            {locked ? " 🔒" : ""}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [health, setHealth] = useState(null);
@@ -692,17 +746,17 @@ export default function App() {
     setView("shop");
   };
 
+  let content;
+
   if (checking) {
-    return (
+    content = (
       <div className="min-h-screen bg-page flex items-center justify-center">
         <p className="text-ink font-bold">Vérification de la session…</p>
       </div>
     );
-  }
-
-  // Le back-office exige une session : sans elle, on retombe sur la connexion.
-  if (view === "login" || ((view === "supervision" || view === "admin") && !user)) {
-    return (
+  } else if (view === "login" || ((view === "supervision" || view === "admin" || view === "shop-admin") && !user)) {
+    // Le back-office exige une session : sans elle, on retombe sur la connexion.
+    content = (
       <div className="relative">
         {healthError && (
           <div className="absolute top-0 left-0 right-0 bg-crimson text-white text-center text-xs font-bold py-1">
@@ -724,20 +778,16 @@ export default function App() {
         </button>
       </div>
     );
-  }
-
-  if (view === "admin" && user) {
-    return (
+  } else if (view === "admin" && user) {
+    content = (
       <AdminPanel
         currentUser={user}
         onLogout={logout}
         onOpenShop={() => setView("shop-admin")}
       />
     );
-  }
-
-  if (view === "shop-admin" && user) {
-    return (
+  } else if (view === "shop-admin" && user) {
+    content = (
       <div className="relative">
         <AdminShop />
         <button
@@ -748,25 +798,49 @@ export default function App() {
         </button>
       </div>
     );
-  }
-
-  if (view === "supervision" && user) {
-    return (
+  } else if (view === "supervision" && user) {
+    content = (
       <Supervision
         user={user}
         onLogout={logout}
         onOpenAdmin={user.role === "admin" ? () => setView("admin") : undefined}
       />
     );
+  } else {
+    content = (
+      <Storefront
+        user={user}
+        onLogin={() => setView("login")}
+        onSupervision={() => setView("supervision")}
+        onAdmin={() => setView("admin")}
+        onLogout={logout}
+      />
+    );
   }
 
   return (
-    <Storefront
-      user={user}
-      onLogin={() => setView("login")}
-      onSupervision={() => setView("supervision")}
-      onAdmin={() => setView("admin")}
-      onLogout={logout}
-    />
+    <>
+      {content}
+      <DemoNav
+        view={view}
+        user={user}
+        onNavigate={(next) => {
+          if (next === "rag") {
+            // L'assistant est un quadrant de la supervision : on y va et on
+            // fait défiler jusqu'à lui. Sans ce raccourci, il faut chercher
+            // sous la console Ansible pendant la démonstration.
+            setView("supervision");
+            window.setTimeout(() => {
+              document.getElementById("assistant-rag")?.scrollIntoView({
+                behavior: "smooth",
+                block: "center",
+              });
+            }, 200);
+            return;
+          }
+          setView(next);
+        }}
+      />
+    </>
   );
 }

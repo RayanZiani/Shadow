@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS orders (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     reference     TEXT NOT NULL UNIQUE,
     customer_ref  TEXT NOT NULL,
+    customer_name TEXT,
+    customer_email TEXT,
     status        TEXT NOT NULL,
     total_cents   INTEGER NOT NULL,
     created_at    REAL NOT NULL,
@@ -131,6 +133,8 @@ CREATE TABLE IF NOT EXISTS orders (
     id            BIGSERIAL PRIMARY KEY,
     reference     TEXT NOT NULL UNIQUE,
     customer_ref  TEXT NOT NULL,
+    customer_name TEXT,
+    customer_email TEXT,
     status        TEXT NOT NULL,
     total_cents   INTEGER NOT NULL,
     created_at    DOUBLE PRECISION NOT NULL,
@@ -202,6 +206,13 @@ class Database:
             self._conn.executescript(SCHEMA_SQLITE)
             self._conn.commit()
 
+        # Colonnes ajoutées après la première mise en service (base déjà créée
+        # sur un poste de démonstration) : `CREATE TABLE IF NOT EXISTS` ne les
+        # ajoute pas. On tente l'ajout et on ignore « existe déjà » — sans quoi
+        # il faudrait un outil de migration pour deux colonnes.
+        self._add_column_if_missing("orders", "customer_name", "TEXT")
+        self._add_column_if_missing("orders", "customer_email", "TEXT")
+
     # --- Plomberie ---------------------------------------------------------
 
     def _execute_script(self, script: str) -> None:
@@ -209,6 +220,21 @@ class Database:
             with self._conn.cursor() as cursor:
                 cursor.execute(script)
             self._conn.commit()
+
+    def _add_column_if_missing(self, table: str, column: str, sql_type: str) -> None:
+        """Ajoute une colonne si elle n'existe pas (SQLite et PostgreSQL)."""
+        try:
+            with self._lock:
+                if self.is_postgres:
+                    with self._conn.cursor() as cursor:
+                        cursor.execute(
+                            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}"
+                        )
+                else:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+                self._conn.commit()
+        except Exception:  # noqa: BLE001 - colonne déjà présente
+            pass
 
     def _adapt(self, sql: str) -> str:
         return sql.replace("?", "%s") if self.is_postgres else sql
